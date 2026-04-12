@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "kidproxy")]
-#[command(about = "Single-backend HTTPS reverse proxy with Parquet logging")]
+#[command(about = "Single-backend HTTPS reverse proxy with SQLite logging")]
 pub struct Cli {
     #[arg(long, env = "PROXY_LISTEN_ADDR")]
     pub listen_addr: String,
@@ -20,8 +20,8 @@ pub struct Cli {
     #[arg(long, env = "PROXY_TLS_KEY_PATH")]
     pub tls_key_path: PathBuf,
 
-    #[arg(long, env = "PROXY_PARQUET_DIR", default_value = "./data/")]
-    pub parquet_dir: PathBuf,
+    #[arg(long, env = "PROXY_SQLITE_PATH")]
+    pub sqlite_path: PathBuf,
 
     #[arg(long, env = "PROXY_CA_BUNDLE_PATH")]
     pub ca_bundle_path: Option<PathBuf>,
@@ -71,9 +71,6 @@ pub struct Cli {
 
     #[arg(long, env = "PROXY_HEADER_DENYLIST", value_delimiter = ',')]
     pub header_denylist: Vec<String>,
-
-    #[arg(long, env = "PROXY_ROLLOVER_MINUTES", default_value_t = 60)]
-    pub rollover_minutes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

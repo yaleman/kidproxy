@@ -6,7 +6,7 @@ use crate::config::{ResolvedHttpMode, RuntimeConfig};
 use crate::error::{ErrorInfo, ErrorKind};
 use crate::probe::BackendProbe;
 use crate::tls::{build_frontend_tls, build_upstream_tls};
-use crate::writer::ParquetWriterHandle;
+use crate::writer::SqliteWriterHandle;
 use anyhow::{Context, anyhow};
 use rama::graceful::Shutdown;
 use rama::http::{
@@ -25,7 +25,7 @@ use tracing::info;
 
 pub struct ProxyApp {
     cfg: RuntimeConfig,
-    writer: ParquetWriterHandle,
+    writer: SqliteWriterHandle,
     probe: BackendProbe,
     http_mode: ResolvedHttpMode,
     upstream_client: BoxService<Request, Response, rama::error::BoxError>,
@@ -67,7 +67,7 @@ impl ProxyHandle {
 impl ProxyApp {
     pub async fn new(
         cfg: RuntimeConfig,
-        writer: ParquetWriterHandle,
+        writer: SqliteWriterHandle,
         probe: BackendProbe,
     ) -> anyhow::Result<Self> {
         let http_mode = cfg.resolved_http_mode(probe.supports_h2);
@@ -197,7 +197,7 @@ impl ProxyApp {
 #[derive(Clone)]
 struct ProxyService {
     cfg: RuntimeConfig,
-    writer: ParquetWriterHandle,
+    writer: SqliteWriterHandle,
     client: BoxService<Request, Response, rama::error::BoxError>,
 }
 

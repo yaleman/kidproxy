@@ -5,16 +5,16 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1"
-arrow = "58"
 base64 = "0.22.1"
 bytes = "1"
 clap = { version = "4.6", features = ["derive", "env"] }
 futures = "0.3"
 hex = "0.4"
-parquet = { version = "58", features = ["arrow", "zstd"] }
 rama = { version = "=0.3.0-alpha.4", features = ["http-full", "rustls"] }
 rustls-native-certs = "0.8.3"
 rustls-pemfile = "2.2.0"
+sea-orm = { version = "1.1.20", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "with-time", "with-uuid"] }
+sea-orm-migration = { version = "1.1.20", default-features = false, features = ["sqlx-sqlite", "runtime-tokio-rustls", "with-time", "with-uuid"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

@@ -95,11 +95,11 @@ pub fn build_upstream_tls(
         ResolvedHttpMode::Http2 => vec![ApplicationProtocol::HTTP_2.as_bytes().to_vec()],
     };
 
-    if cfg.emit_keylog {
-        if let Some(path) = KeyLogIntent::Environment.file_path() {
-            client_config.key_log =
-                Arc::new(KeyLogFile::try_new(path.as_ref()).context("enable upstream key logger")?);
-        }
+    if cfg.emit_keylog
+        && let Some(path) = KeyLogIntent::Environment.file_path()
+    {
+        client_config.key_log =
+            Arc::new(KeyLogFile::try_new(path.as_ref()).context("enable upstream key logger")?);
     }
 
     let connector_data = TlsConnectorDataBuilder::from(client_config)
@@ -268,7 +268,7 @@ mod tests {
             backend_path_prefix: "/".to_owned(),
             tls_cert_path: cert_path.clone(),
             tls_key_path: key_path.clone(),
-            parquet_dir: tempdir.path().join("parquet"),
+            sqlite_path: tempdir.path().join("events.sqlite"),
             ca_bundle_path: Some(cert_path),
             upstream_sni: "127.0.0.1".to_owned(),
             http_mode: HttpMode::Http1,
@@ -283,7 +283,6 @@ mod tests {
             trust_proxy_headers: false,
             emit_keylog: false,
             header_log_policy: HeaderLogPolicy::default(),
-            rollover_minutes: 1,
         };
 
         let frontend = build_frontend_tls(&cfg, ResolvedHttpMode::Http1)?;

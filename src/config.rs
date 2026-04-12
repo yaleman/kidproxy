@@ -43,7 +43,7 @@ pub struct RuntimeConfig {
     pub backend_path_prefix: String,
     pub tls_cert_path: PathBuf,
     pub tls_key_path: PathBuf,
-    pub parquet_dir: PathBuf,
+    pub sqlite_path: PathBuf,
     pub ca_bundle_path: Option<PathBuf>,
     pub upstream_sni: String,
     pub http_mode: HttpMode,
@@ -58,7 +58,6 @@ pub struct RuntimeConfig {
     pub trust_proxy_headers: bool,
     pub emit_keylog: bool,
     pub header_log_policy: HeaderLogPolicy,
-    pub rollover_minutes: u64,
 }
 
 impl RuntimeConfig {
@@ -134,13 +133,11 @@ impl TryFrom<Cli> for RuntimeConfig {
             ensure_readable_file(path, "CA bundle")?;
         }
 
-        fs::create_dir_all(&cli.parquet_dir)
-            .with_context(|| format!("failed to create {}", cli.parquet_dir.display()))?;
-        if !cli.parquet_dir.is_dir() {
-            bail!(
-                "parquet dir is not a directory: {}",
-                cli.parquet_dir.display()
-            );
+        if let Some(parent) = cli.sqlite_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
         }
 
         validate_positive("flush rows", cli.flush_rows)?;
@@ -154,8 +151,6 @@ impl TryFrom<Cli> for RuntimeConfig {
             "graceful shutdown timeout",
             cli.graceful_shutdown_timeout_ms,
         )?;
-        validate_positive("rollover minutes", cli.rollover_minutes)?;
-
         Ok(Self {
             listen_addr,
             frontend_domain,
@@ -166,7 +161,7 @@ impl TryFrom<Cli> for RuntimeConfig {
             backend_path_prefix,
             tls_cert_path: cli.tls_cert_path,
             tls_key_path: cli.tls_key_path,
-            parquet_dir: cli.parquet_dir,
+            sqlite_path: cli.sqlite_path,
             ca_bundle_path: cli.ca_bundle_path,
             upstream_sni,
             http_mode: cli.http_mode,
@@ -184,7 +179,6 @@ impl TryFrom<Cli> for RuntimeConfig {
                 allowlist: normalize_header_names(cli.header_allowlist),
                 denylist: normalize_header_names(cli.header_denylist),
             },
-            rollover_minutes: cli.rollover_minutes,
         })
     }
 }
@@ -264,7 +258,7 @@ mod tests {
             backend_url: "https://backend.example/base".to_owned(),
             tls_cert_path: cert_path.clone(),
             tls_key_path: key_path.clone(),
-            parquet_dir: tempdir.path().join("parquet"),
+            sqlite_path: tempdir.path().join("events.sqlite"),
             ca_bundle_path: Some(cert_path),
             upstream_sni_override: None,
             http_mode: HttpMode::Auto,
@@ -280,7 +274,6 @@ mod tests {
             emit_keylog: false,
             header_allowlist: vec!["X-Test".to_owned()],
             header_denylist: vec!["X-Drop".to_owned()],
-            rollover_minutes: 1,
         })?;
 
         assert_eq!(config.frontend_domain, "example.test");
@@ -302,7 +295,7 @@ mod tests {
             backend_url: "http://backend.example".to_owned(),
             tls_cert_path: PathBuf::from("missing-cert.pem"),
             tls_key_path: PathBuf::from("missing-key.pem"),
-            parquet_dir: PathBuf::from("target/tmp"),
+            sqlite_path: PathBuf::from("target/tmp/events.sqlite"),
             ca_bundle_path: None,
             upstream_sni_override: None,
             http_mode: HttpMode::Auto,
@@ -318,7 +311,6 @@ mod tests {
             emit_keylog: false,
             header_allowlist: Vec::new(),
             header_denylist: Vec::new(),
-            rollover_minutes: 1,
         };
 
         let result = RuntimeConfig::try_from(cli);

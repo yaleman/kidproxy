@@ -6,6 +6,7 @@ Use package managers to manage dependencies instead of direct file editing. Refa
 - `pnpm` instead of `npm`.
 - Avoid OpenSSL at all costs.
 - Avoid stringly-typed error categories and machine-readable status values. Use enums or dedicated structs internally, and only convert them to strings at storage or presentation boundaries.
+- Never use the SeaORM CLI. Define and run migrations programmatically from Rust code only.
 
 ## UI rules
 

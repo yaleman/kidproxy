@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
         listen_addr = %config.listen_addr,
         frontend_domain = %config.frontend_domain,
         backend_url = %config.backend_url,
-        parquet_dir = %config.parquet_dir.display(),
+        sqlite_path = %config.sqlite_path.display(),
         "starting proxy"
     );
 
@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
 
     let writer = kidproxy::writer::spawn_writer(&config)
         .await
-        .context("failed to start parquet writer")?;
+        .context("failed to start SQLite writer")?;
     let proxy = kidproxy::proxy::ProxyApp::new(config.clone(), writer.clone(), probe)
         .await
         .context("failed to initialize proxy app")?;
@@ -66,10 +66,10 @@ async fn main() -> anyhow::Result<()> {
         }
         _ = signal::ctrl_c() => {
             info!("shutdown signal received");
-            if let Some(handle) = handle.take() {
-                if let Err(err) = handle.shutdown().await {
-                    error!(error = %err, "proxy shutdown failed");
-                }
+            if let Some(handle) = handle.take()
+                && let Err(err) = handle.shutdown().await
+            {
+                error!(error = %err, "proxy shutdown failed");
             }
         }
     }

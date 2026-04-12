@@ -1,6 +1,6 @@
 # kidproxy
 
-`kidproxy` is a single-backend HTTPS reverse proxy built with Rama and Rustls. It terminates frontend TLS, forwards traffic to one configured `https://` backend, preserves request and response flow as closely as practical, and writes one Parquet row per completed exchange.
+`kidproxy` is a single-backend HTTPS reverse proxy built with Rama and Rustls. It terminates frontend TLS, forwards traffic to one configured `https://` backend, preserves request and response flow as closely as practical, and writes one SQLite row per completed exchange.
 
 ## What v1 does
 
@@ -8,7 +8,7 @@
 - Proxies to one fixed HTTPS backend with Rustls certificate verification.
 - Preserves method, path, query, status, headers, and streaming bodies without intentional payload rewriting.
 - Captures request, response, connection, timing, and TLS metadata.
-- Writes batched Parquet files under a time-partitioned directory layout.
+- Writes completed exchanges into one SQLite database with SeaORM-managed migrations.
 - Drops log events under pressure instead of blocking proxy traffic.
 
 ## What v1 does not do
@@ -18,6 +18,7 @@
 - Request or response body rewriting.
 - Header rewriting beyond hop-by-hop filtering required for correct proxying.
 - Impossible certificate mirroring between different frontend and backend hostnames.
+- Database sharding, partitioning, or segmented output files.
 
 ## CLI
 
@@ -30,7 +31,7 @@ Required flags:
 - `--backend-url`
 - `--tls-cert-path`
 - `--tls-key-path`
-- `--parquet-dir`
+- `--sqlite-path`
 
 Useful optional flags:
 
@@ -52,7 +53,7 @@ cargo run -- \
   --backend-url https://example2.com \
   --tls-cert-path ./certs/fullchain.pem \
   --tls-key-path ./certs/privkey.pem \
-  --parquet-dir ./data/parquet
+  --sqlite-path ./data/kidproxy.sqlite
 ```
 
 Environment example:
@@ -63,19 +64,13 @@ export PROXY_FRONTEND_DOMAIN="example1.com"
 export PROXY_BACKEND_URL="https://example2.com"
 export PROXY_TLS_CERT_PATH="./certs/fullchain.pem"
 export PROXY_TLS_KEY_PATH="./certs/privkey.pem"
-export PROXY_PARQUET_DIR="./data/parquet"
+export PROXY_SQLITE_PATH="./data/kidproxy.sqlite"
 cargo run --
 ```
 
-## Parquet output
+## SQLite output
 
-Files are written under:
-
-```text
-parquet_dir/YYYY/MM/DD/HH/
-```
-
-Each file contains one or more completed exchange rows with typed top-level columns for hot fields and JSON string columns for variable structures such as headers and cookies.
+The writer stores one row per completed exchange in the `proxy_events` table. Schema setup is handled by in-process SeaORM migrations only; the SeaORM CLI is not used.
 
 ## Development
 
@@ -86,15 +81,16 @@ Main modules:
 - `src/tls.rs`: Rustls frontend and upstream configuration
 - `src/proxy.rs`: Rama listener and reverse proxy path
 - `src/capture.rs`: exchange capture and body observers
-- `src/schema.rs`: Arrow schema and record-batch conversion
-- `src/writer.rs`: bounded writer task and Parquet flush logic
+- `src/entity.rs`: SeaORM entity definitions
+- `src/migration.rs`: programmatic database migrations
+- `src/writer.rs`: bounded writer task and SQLite flush logic
 - `src/probe.rs`: backend compatibility probe
 
 Integration coverage lives in:
 
 - `tests/basic_proxy.rs`
 - `tests/streaming.rs`
-- `tests/parquet_output.rs`
+- `tests/sqlite_output.rs`
 
 ## Notes
 

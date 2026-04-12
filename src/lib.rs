@@ -14,10 +14,11 @@
 pub mod capture;
 pub mod cli;
 pub mod config;
+pub mod entity;
 pub mod error;
 pub mod event;
+pub mod migration;
 pub mod probe;
 pub mod proxy;
-pub mod schema;
 pub mod tls;
 pub mod writer;

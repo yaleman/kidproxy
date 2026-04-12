@@ -5,10 +5,10 @@ use bytes::Bytes;
 use futures::{StreamExt, stream};
 use kidproxy::cli::{Cli, HttpMode};
 use kidproxy::config::RuntimeConfig;
+use kidproxy::entity;
 use kidproxy::probe::{self, BackendProbe};
 use kidproxy::proxy::{ProxyApp, ProxyHandle};
-use kidproxy::writer::{ParquetWriterHandle, spawn_writer};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use kidproxy::writer::{SqliteWriterHandle, spawn_writer};
 use rama::Layer;
 use rama::graceful::Shutdown;
 use rama::http::{
@@ -19,6 +19,7 @@ use rama::tcp::server::TcpListener;
 use rama::tls::rustls::dep::pki_types::{CertificateDer, PrivateKeyDer};
 use rama::tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
 use rcgen::generate_simple_self_signed;
+use sea_orm::EntityTrait;
 use std::convert::Infallible;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
@@ -72,17 +73,13 @@ pub struct ProxyHarness {
     pub frontend_cert: TestCert,
     pub backend: BackendHarness,
     pub config: RuntimeConfig,
-    pub writer: ParquetWriterHandle,
+    pub writer: SqliteWriterHandle,
     handle: Option<ProxyHandle>,
 }
 
 impl ProxyHarness {
     pub fn proxy_addr(&self) -> SocketAddr {
         self.config.listen_addr
-    }
-
-    pub fn parquet_dir(&self) -> &Path {
-        &self.config.parquet_dir
     }
 
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
@@ -116,7 +113,7 @@ pub async fn start_proxy_harness(
         backend_url: format!("https://127.0.0.1:{}", backend.addr.port()),
         tls_cert_path: frontend_cert.cert_path.clone(),
         tls_key_path: frontend_cert.key_path.clone(),
-        parquet_dir: tempdir.path().join("parquet"),
+        sqlite_path: PathBuf::from(":memory:"),
         ca_bundle_path: Some(backend.cert.cert_path.clone()),
         upstream_sni_override: Some("127.0.0.1".to_owned()),
         http_mode: HttpMode::Http1,
@@ -132,7 +129,6 @@ pub async fn start_proxy_harness(
         emit_keylog: false,
         header_allowlist: Vec::new(),
         header_denylist: Vec::new(),
-        rollover_minutes: 60,
     })
     .context("build test runtime config")?;
 
@@ -175,48 +171,11 @@ pub fn proxy_url(proxy_addr: SocketAddr, path: &str) -> String {
     format!("https://proxy.local:{}{path}", proxy_addr.port())
 }
 
-pub fn parquet_files(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    collect_parquet_files(dir, &mut files)?;
-    files.sort();
-    Ok(files)
-}
-
-pub fn read_parquet_batches(dir: &Path) -> anyhow::Result<Vec<arrow::record_batch::RecordBatch>> {
-    let mut batches = Vec::new();
-
-    for path in parquet_files(dir)? {
-        let file = fs::File::open(&path)
-            .with_context(|| format!("open parquet file {}", path.display()))?;
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-            .context("create parquet batch reader")?
-            .build()
-            .context("build parquet batch reader")?;
-
-        for batch in reader {
-            batches.push(batch.context("read parquet batch")?);
-        }
-    }
-
-    Ok(batches)
-}
-
-fn collect_parquet_files(dir: &Path, output: &mut Vec<PathBuf>) -> anyhow::Result<()> {
-    if !dir.exists() {
-        return Ok(());
-    }
-
-    for entry in fs::read_dir(dir).with_context(|| format!("read dir {}", dir.display()))? {
-        let entry = entry.with_context(|| format!("read dir entry in {}", dir.display()))?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_parquet_files(&path, output)?;
-        } else if path.extension().and_then(|value| value.to_str()) == Some("parquet") {
-            output.push(path);
-        }
-    }
-
-    Ok(())
+pub async fn read_logged_events(writer: &SqliteWriterHandle) -> anyhow::Result<Vec<entity::Model>> {
+    entity::Entity::find()
+        .all(&writer.database())
+        .await
+        .context("read logged SQLite events")
 }
 
 fn write_test_cert(base: &Path, name: &str, sans: &[String]) -> anyhow::Result<TestCert> {

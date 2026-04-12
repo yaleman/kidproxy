@@ -11,7 +11,7 @@ pub enum ErrorKind {
     Timeout,
     UpstreamProtocol,
     ClientProtocol,
-    ParquetWrite,
+    SqliteWrite,
     Internal,
 }
 
@@ -26,7 +26,7 @@ impl ErrorKind {
             Self::Timeout => "timeout",
             Self::UpstreamProtocol => "upstream_protocol",
             Self::ClientProtocol => "client_protocol",
-            Self::ParquetWrite => "parquet_write",
+            Self::SqliteWrite => "sqlite_write",
             Self::Internal => "internal",
         }
     }

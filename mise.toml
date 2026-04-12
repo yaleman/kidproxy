@@ -1,0 +1,8 @@
+[tasks.check]
+depends = ["clippy", "fmt"]
+
+[tasks.clippy]
+run = "cargo clippy --all-targets --workspace"
+
+[tasks.fmt]
+run = "cargo fmt --all"

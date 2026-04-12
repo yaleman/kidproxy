@@ -4,7 +4,7 @@ use crate::event::ProxyEvent;
 use crate::tls::{
     BackendTlsMetadata, FrontendTlsMetadata, backend_tls_metadata, frontend_tls_metadata,
 };
-use crate::writer::ParquetWriterHandle;
+use crate::writer::SqliteWriterHandle;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
@@ -156,7 +156,7 @@ impl SharedExchangeCapture {
         self.lock().response_body.observe(chunk);
     }
 
-    pub fn finalize_and_send(&self, writer: &ParquetWriterHandle) {
+    pub fn finalize_and_send(&self, writer: &SqliteWriterHandle) {
         let event = {
             let mut guard = self.lock();
             if guard.finalized {
@@ -168,11 +168,7 @@ impl SharedExchangeCapture {
         writer.try_send(event);
     }
 
-    pub fn finalize_with_body_error_and_send(
-        &self,
-        writer: &ParquetWriterHandle,
-        error: ErrorInfo,
-    ) {
+    pub fn finalize_with_body_error_and_send(&self, writer: &SqliteWriterHandle, error: ErrorInfo) {
         {
             let mut guard = self.lock();
             if guard.error.is_none() {
@@ -383,7 +379,7 @@ impl BodyAccumulator {
 pub struct ObservedBody<B> {
     inner: B,
     capture: SharedExchangeCapture,
-    writer: Option<ParquetWriterHandle>,
+    writer: Option<SqliteWriterHandle>,
     direction: BodyDirection,
     finalized: bool,
     completed: bool,
@@ -407,7 +403,7 @@ impl<B> ObservedBody<B> {
         }
     }
 
-    pub fn response(inner: B, capture: SharedExchangeCapture, writer: ParquetWriterHandle) -> Self {
+    pub fn response(inner: B, capture: SharedExchangeCapture, writer: SqliteWriterHandle) -> Self {
         Self {
             inner,
             capture,

@@ -1,8 +1,7 @@
 mod common;
 
 use anyhow::Context;
-use arrow::array::{Array, StringArray};
-use common::{proxy_url, read_parquet_batches, start_proxy_harness, test_client};
+use common::{proxy_url, read_logged_events, start_proxy_harness, test_client};
 use futures::{StreamExt, stream};
 use std::time::{Duration, Instant};
 
@@ -71,28 +70,15 @@ async fn hashes_streamed_request_body() -> anyhow::Result<()> {
     );
 
     harness.shutdown().await?;
-    let batches = read_parquet_batches(harness.parquet_dir())?;
-    let request_hashes = batches
+    let rows = read_logged_events(&harness.writer).await?;
+    let request_hashes = rows
         .iter()
-        .flat_map(|batch| {
-            let column = batch
-                .column_by_name("request_body_sha256")
-                .and_then(|array| array.as_any().downcast_ref::<StringArray>());
-            let Some(column) = column else {
-                return Vec::<String>::new().into_iter();
-            };
-            (0..column.len())
-                .filter_map(|index| {
-                    (!column.is_null(index)).then(|| column.value(index).to_owned())
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-        })
+        .filter_map(|row| row.request_body_sha256.clone())
         .collect::<Vec<_>>();
 
     assert!(
         request_hashes.iter().any(|value| !value.is_empty()),
-        "expected at least one request body hash in parquet output"
+        "expected at least one request body hash in SQLite output"
     );
 
     Ok(())
