@@ -20,7 +20,7 @@ pub struct Cli {
     #[arg(long, env = "PROXY_TLS_KEY_PATH")]
     pub tls_key_path: PathBuf,
 
-    #[arg(long, env = "PROXY_PARQUET_DIR")]
+    #[arg(long, env = "PROXY_PARQUET_DIR", default_value = "./data/")]
     pub parquet_dir: PathBuf,
 
     #[arg(long, env = "PROXY_CA_BUNDLE_PATH")]
