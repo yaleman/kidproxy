@@ -1,4 +1,5 @@
 use crate::cli::{Cli, HttpMode};
+use crate::transform::TransformConfig;
 use anyhow::{Context, bail};
 use rama::http::{Uri, Version};
 use rama::net::address::Domain;
@@ -44,6 +45,7 @@ pub struct RuntimeConfig {
     pub tls_cert_path: PathBuf,
     pub tls_key_path: PathBuf,
     pub sqlite_path: PathBuf,
+    pub config_path: Option<PathBuf>,
     pub ca_bundle_path: Option<PathBuf>,
     pub upstream_sni: String,
     pub http_mode: HttpMode,
@@ -58,6 +60,7 @@ pub struct RuntimeConfig {
     pub trust_proxy_headers: bool,
     pub emit_keylog: bool,
     pub header_log_policy: HeaderLogPolicy,
+    pub transforms: TransformConfig,
 }
 
 impl RuntimeConfig {
@@ -129,9 +132,19 @@ impl TryFrom<Cli> for RuntimeConfig {
 
         ensure_readable_file(&cli.tls_cert_path, "TLS cert")?;
         ensure_readable_file(&cli.tls_key_path, "TLS key")?;
+        if let Some(path) = &cli.config_path {
+            ensure_readable_file(path, "config")?;
+        }
         if let Some(path) = &cli.ca_bundle_path {
             ensure_readable_file(path, "CA bundle")?;
         }
+
+        let transforms = match &cli.config_path {
+            Some(path) => {
+                TransformConfig::load_json(path).with_context(|| "load transform config")?
+            }
+            None => TransformConfig::default(),
+        };
 
         if let Some(parent) = cli.sqlite_path.parent()
             && !parent.as_os_str().is_empty()
@@ -162,6 +175,7 @@ impl TryFrom<Cli> for RuntimeConfig {
             tls_cert_path: cli.tls_cert_path,
             tls_key_path: cli.tls_key_path,
             sqlite_path: cli.sqlite_path,
+            config_path: cli.config_path,
             ca_bundle_path: cli.ca_bundle_path,
             upstream_sni,
             http_mode: cli.http_mode,
@@ -179,6 +193,7 @@ impl TryFrom<Cli> for RuntimeConfig {
                 allowlist: normalize_header_names(cli.header_allowlist),
                 denylist: normalize_header_names(cli.header_denylist),
             },
+            transforms,
         })
     }
 }
@@ -259,6 +274,7 @@ mod tests {
             tls_cert_path: cert_path.clone(),
             tls_key_path: key_path.clone(),
             sqlite_path: tempdir.path().join("events.sqlite"),
+            config_path: None,
             ca_bundle_path: Some(cert_path),
             upstream_sni_override: None,
             http_mode: HttpMode::Auto,
@@ -296,6 +312,7 @@ mod tests {
             tls_cert_path: PathBuf::from("missing-cert.pem"),
             tls_key_path: PathBuf::from("missing-key.pem"),
             sqlite_path: PathBuf::from("target/tmp/events.sqlite"),
+            config_path: None,
             ca_bundle_path: None,
             upstream_sni_override: None,
             http_mode: HttpMode::Auto,
@@ -318,5 +335,46 @@ mod tests {
         if let Err(err) = result {
             assert!(err.to_string().contains("backend URL must use https"));
         }
+    }
+
+    #[test]
+    fn rejects_invalid_transform_config_json() -> anyhow::Result<()> {
+        let tempdir = TempDir::new().context("create tempdir")?;
+        let cert = generate_simple_self_signed(vec!["localhost".to_owned()])
+            .context("generate test cert")?;
+        let cert_path = tempdir.path().join("cert.pem");
+        let key_path = tempdir.path().join("key.pem");
+        let config_path = tempdir.path().join("transforms.json");
+        std::fs::write(&cert_path, cert.cert.pem()).context("write cert pem")?;
+        std::fs::write(&key_path, cert.signing_key.serialize_pem()).context("write key pem")?;
+        std::fs::write(&config_path, "{not json").context("write invalid config")?;
+
+        let result = RuntimeConfig::try_from(Cli {
+            listen_addr: "127.0.0.1:8443".to_owned(),
+            frontend_domain: "Example.TEST".to_owned(),
+            backend_url: "https://backend.example/base".to_owned(),
+            tls_cert_path: cert_path,
+            tls_key_path: key_path,
+            sqlite_path: tempdir.path().join("events.sqlite"),
+            config_path: Some(config_path),
+            ca_bundle_path: None,
+            upstream_sni_override: None,
+            http_mode: HttpMode::Auto,
+            flush_rows: 1,
+            flush_interval_ms: 1,
+            max_inflight_events: 1,
+            body_max_bytes: 32,
+            connect_timeout_ms: 1,
+            request_timeout_ms: 1,
+            idle_pool_timeout_ms: 1,
+            graceful_shutdown_timeout_ms: 1,
+            trust_proxy_headers: false,
+            emit_keylog: false,
+            header_allowlist: Vec::new(),
+            header_denylist: Vec::new(),
+        });
+
+        assert!(result.is_err());
+        Ok(())
     }
 }

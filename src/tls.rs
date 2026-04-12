@@ -237,6 +237,7 @@ mod tests {
     use super::*;
     use crate::cli::HttpMode;
     use crate::config::{HeaderLogPolicy, RuntimeConfig};
+    use crate::transform::TransformConfig;
     use anyhow::Context;
     use rcgen::generate_simple_self_signed;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -269,6 +270,7 @@ mod tests {
             tls_cert_path: cert_path.clone(),
             tls_key_path: key_path.clone(),
             sqlite_path: tempdir.path().join("events.sqlite"),
+            config_path: None,
             ca_bundle_path: Some(cert_path),
             upstream_sni: "127.0.0.1".to_owned(),
             http_mode: HttpMode::Http1,
@@ -283,6 +285,7 @@ mod tests {
             trust_proxy_headers: false,
             emit_keylog: false,
             header_log_policy: HeaderLogPolicy::default(),
+            transforms: TransformConfig::default(),
         };
 
         let frontend = build_frontend_tls(&cfg, ResolvedHttpMode::Http1)?;

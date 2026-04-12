@@ -97,6 +97,14 @@ pub async fn start_proxy_harness(
     body_max_bytes: usize,
     flush_rows: usize,
 ) -> anyhow::Result<ProxyHarness> {
+    start_proxy_harness_with_config(body_max_bytes, flush_rows, None).await
+}
+
+pub async fn start_proxy_harness_with_config(
+    body_max_bytes: usize,
+    flush_rows: usize,
+    config_path: Option<PathBuf>,
+) -> anyhow::Result<ProxyHarness> {
     init_test_crypto_provider();
 
     let tempdir = TempDir::new().context("create test tempdir")?;
@@ -114,6 +122,7 @@ pub async fn start_proxy_harness(
         tls_cert_path: frontend_cert.cert_path.clone(),
         tls_key_path: frontend_cert.key_path.clone(),
         sqlite_path: PathBuf::from(":memory:"),
+        config_path,
         ca_bundle_path: Some(backend.cert.cert_path.clone()),
         upstream_sni_override: Some("127.0.0.1".to_owned()),
         http_mode: HttpMode::Http1,
@@ -260,6 +269,41 @@ async fn backend_response(req: Request, hits: Arc<AtomicUsize>) -> Result<Respon
     let path = req.uri().path().to_owned();
     let response = match path.as_str() {
         "/hello" => Response::new(Body::from("hello from backend")),
+        "/headers" => {
+            let mut response = Response::new(Body::from("backend header body"));
+            response
+                .headers_mut()
+                .insert("x-test", header::HeaderValue::from_static("backend header"));
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("text/plain"),
+            );
+            response
+        }
+        "/cookies" => {
+            let mut response = Response::new(Body::from("cookie backend body"));
+            response.headers_mut().append(
+                header::SET_COOKIE,
+                header::HeaderValue::from_static("session=backend-token; Path=/"),
+            );
+            response.headers_mut().append(
+                header::SET_COOKIE,
+                header::HeaderValue::from_static("mode=backend; Path=/"),
+            );
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("text/plain"),
+            );
+            response
+        }
+        "/html" => {
+            let mut response = Response::new(Body::from("<html>backend page</html>"));
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("text/html; charset=utf-8"),
+            );
+            response
+        }
         "/redirect" => {
             let mut response = Response::new(Body::empty());
             *response.status_mut() = StatusCode::FOUND;

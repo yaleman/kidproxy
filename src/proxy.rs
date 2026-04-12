@@ -6,11 +6,12 @@ use crate::config::{ResolvedHttpMode, RuntimeConfig};
 use crate::error::{ErrorInfo, ErrorKind};
 use crate::probe::BackendProbe;
 use crate::tls::{build_frontend_tls, build_upstream_tls};
+use crate::transform::{PrebufferDisposition, request_url};
 use crate::writer::SqliteWriterHandle;
 use anyhow::{Context, anyhow};
 use rama::graceful::Shutdown;
 use rama::http::{
-    Body, Request, Response, StatusCode, client::EasyHttpWebClient,
+    Body, Request, Response, StatusCode, body::util::BodyExt, client::EasyHttpWebClient, header,
     layer::required_header::AddRequiredRequestHeadersLayer, server::HttpServer,
 };
 use rama::net::client::pool::http::HttpPooledConnectorConfig;
@@ -220,6 +221,8 @@ impl ProxyService {
             ));
         }
 
+        let request_url = request_url(req.uri().path(), req.uri().query());
+
         let (mut parts, body) = req.into_parts();
         let upstream_uri = match self
             .cfg
@@ -274,21 +277,92 @@ impl ProxyService {
             }
         };
 
-        capture.set_upstream_response(&self.cfg, &upstream_response, response_started_at);
-
         let (mut response_parts, response_body) = upstream_response.into_parts();
         strip_hop_by_hop_headers(&mut response_parts.headers);
+        let transform_plan = self
+            .cfg
+            .transforms
+            .apply_until_body(&request_url, &mut response_parts.headers);
+        let transform_plan = match transform_plan {
+            Ok(plan) => plan,
+            Err(err) => {
+                capture.set_upstream_error(ErrorInfo::from_display(ErrorKind::Internal, err));
+                capture.finalize_and_send(&self.writer);
+                return Ok(make_gateway_error(StatusCode::BAD_GATEWAY, "bad gateway"));
+            }
+        };
 
-        let response = Response::from_parts(
-            response_parts,
-            Body::new(ObservedBody::response(
-                response_body,
-                capture,
-                self.writer.clone(),
-            )),
-        );
+        match transform_plan.disposition {
+            PrebufferDisposition::Stream => {
+                if transform_plan.headers_changed {
+                    response_parts.headers.remove(header::CONTENT_LENGTH);
+                }
 
-        Ok(response)
+                let response = Response::from_parts(
+                    response_parts,
+                    Body::new(ObservedBody::response(
+                        response_body,
+                        capture.clone(),
+                        self.writer.clone(),
+                    )),
+                );
+                capture.set_upstream_response(&self.cfg, &response, response_started_at);
+                Ok(response)
+            }
+            PrebufferDisposition::BufferFrom(start_index) => {
+                let collected = match response_body.collect().await {
+                    Ok(collected) => collected.to_bytes().to_vec(),
+                    Err(err) => {
+                        capture.set_upstream_error(ErrorInfo::from_display(
+                            ErrorKind::UpstreamProtocol,
+                            err,
+                        ));
+                        capture.finalize_and_send(&self.writer);
+                        return Ok(make_gateway_error(StatusCode::BAD_GATEWAY, "bad gateway"));
+                    }
+                };
+                let mut body_bytes = collected;
+                let apply_result = self.cfg.transforms.apply_with_body(
+                    start_index,
+                    &request_url,
+                    &mut response_parts.headers,
+                    &mut body_bytes,
+                );
+                if let Err(err) = apply_result {
+                    capture.set_upstream_error(ErrorInfo::from_display(ErrorKind::Internal, err));
+                    capture.finalize_and_send(&self.writer);
+                    return Ok(make_gateway_error(StatusCode::BAD_GATEWAY, "bad gateway"));
+                }
+
+                response_parts.headers.remove(header::CONTENT_LENGTH);
+                let content_length = body_bytes.len().to_string();
+                let content_length = match header::HeaderValue::from_str(&content_length) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        capture.set_upstream_error(ErrorInfo::from_display(
+                            ErrorKind::Internal,
+                            format!("failed to build content-length header: {err}"),
+                        ));
+                        capture.finalize_and_send(&self.writer);
+                        return Ok(make_gateway_error(StatusCode::BAD_GATEWAY, "bad gateway"));
+                    }
+                };
+                response_parts
+                    .headers
+                    .insert(header::CONTENT_LENGTH, content_length);
+
+                let response = Response::from_parts(
+                    response_parts,
+                    Body::new(ObservedBody::response(
+                        Body::from(body_bytes),
+                        capture.clone(),
+                        self.writer.clone(),
+                    )),
+                );
+                capture.set_upstream_response(&self.cfg, &response, response_started_at);
+                Ok(response)
+            }
+        }
     }
 }
 

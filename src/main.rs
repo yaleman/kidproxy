@@ -30,6 +30,12 @@ async fn main() -> anyhow::Result<()> {
         frontend_domain = %config.frontend_domain,
         backend_url = %config.backend_url,
         sqlite_path = %config.sqlite_path.display(),
+        config_path = config
+            .config_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<none>".to_owned()),
+        transform_count = config.transforms.transforms.len(),
         "starting proxy"
     );
 

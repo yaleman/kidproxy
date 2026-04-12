@@ -352,6 +352,7 @@ mod tests {
     use crate::config::{HeaderLogPolicy, RuntimeConfig};
     use crate::error::ProxyResult;
     use crate::event::ProxyEvent;
+    use crate::transform::TransformConfig;
     use sea_orm::EntityTrait;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::path::PathBuf;
@@ -372,6 +373,7 @@ mod tests {
             tls_cert_path: PathBuf::from("unused-cert.pem"),
             tls_key_path: PathBuf::from("unused-key.pem"),
             sqlite_path: PathBuf::from(":memory:"),
+            config_path: None,
             ca_bundle_path: None,
             upstream_sni: "backend.test".to_owned(),
             http_mode: HttpMode::Http1,
@@ -386,6 +388,7 @@ mod tests {
             trust_proxy_headers: false,
             emit_keylog: false,
             header_log_policy: HeaderLogPolicy::default(),
+            transforms: TransformConfig::default(),
         };
 
         let writer = spawn_writer(&cfg).await?;

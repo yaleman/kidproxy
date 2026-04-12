@@ -21,4 +21,5 @@ pub mod migration;
 pub mod probe;
 pub mod proxy;
 pub mod tls;
+pub mod transform;
 pub mod writer;

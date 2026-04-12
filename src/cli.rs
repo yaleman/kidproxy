@@ -23,6 +23,9 @@ pub struct Cli {
     #[arg(long, env = "PROXY_SQLITE_PATH")]
     pub sqlite_path: PathBuf,
 
+    #[arg(long, env = "PROXY_CONFIG_PATH")]
+    pub config_path: Option<PathBuf>,
+
     #[arg(long, env = "PROXY_CA_BUNDLE_PATH")]
     pub ca_bundle_path: Option<PathBuf>,
 

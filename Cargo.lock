@@ -1734,6 +1734,7 @@ dependencies = [
  "bytes",
  "clap",
  "futures",
+ "glob",
  "hex",
  "rama",
  "rcgen",
