@@ -282,7 +282,6 @@ mod tests {
             tls_cert_path: cert_path.clone(),
             tls_key_path: key_path.clone(),
             sqlite_path: tempdir.path().join("events.sqlite"),
-            config_path: None,
             ca_bundle_path: Some(cert_path),
             upstream_sni: "127.0.0.1".to_owned(),
             http_mode: HttpMode::Http1,

@@ -1,8 +1,9 @@
 # Agents
 
+You aren't done with a task until `mise check` passes and the system runs as requested.
+
 Use package managers to manage dependencies instead of direct file editing. Refactor and reduce code sprawl while working. Don't plan for extensibility or backwards compatibility unless explicitly told to. Prefer simple, direct approaches instead of abstractions.
 
-- Rust is cool but Python's OK.
 - `pnpm` instead of `npm`.
 - Avoid OpenSSL at all costs.
 - Avoid stringly-typed error categories and machine-readable status values. Use enums or dedicated structs internally, and only convert them to strings at storage or presentation boundaries.

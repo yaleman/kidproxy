@@ -1,0 +1,39 @@
+{
+  "runtime": {
+    "listen_addr": "0.0.0.0:8443",
+    "frontend_domain": "m1.housenet.yaleman.org",
+    "backend_url": "https://yaleman.org",
+    "tls_cert_path": "/Users/yaleman/Nextcloud/dotfiles/letsencrypt/live/m1.housenet.yaleman.org/fullchain.pem",
+    "tls_key_path": "/Users/yaleman/Nextcloud/dotfiles/letsencrypt/live/m1.housenet.yaleman.org/privkey.pem",
+    "sqlite_path": "./data/kidproxy.sqlite",
+    "http_mode": "auto",
+    "flush_rows": 5000,
+    "flush_interval_ms": 2000,
+    "max_inflight_events": 10000,
+    "body_max_bytes": 65536,
+    "connect_timeout_ms": 5000,
+    "request_timeout_ms": 180000,
+    "idle_pool_timeout_ms": 90000,
+    "graceful_shutdown_timeout_ms": 10000,
+    "trust_proxy_headers": false,
+    "emit_keylog": false,
+    "header_allowlist": [],
+    "header_denylist": []
+  },
+  "transforms": [
+    {
+      "matcher": {
+        "type": "any"
+      },
+      "action": {
+        "type": "replace",
+        "from": "https://yaleman.org",
+        "to": "https://m1.housenet.yaleman.org"
+      },
+      "target": {
+        "type": "any"
+      },
+      "stop": true
+    }
+  ]
+}

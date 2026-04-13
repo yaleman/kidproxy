@@ -4,9 +4,7 @@ use rama::http::{
     HeaderMap, HeaderValue,
     header::{self, HeaderName},
 };
-use serde::Deserialize;
-use std::fs;
-use std::path::Path;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default)]
 pub struct TransformConfig {
@@ -61,15 +59,10 @@ pub struct ApplyOutcome {
 }
 
 impl TransformConfig {
-    pub fn load_json(path: &Path) -> anyhow::Result<Self> {
-        let contents = fs::read_to_string(path)
-            .with_context(|| format!("read transform config {}", path.display()))?;
-        let raw: TransformFile = serde_json::from_str(&contents)
-            .with_context(|| format!("parse transform config {}", path.display()))?;
-
-        let transforms = raw
-            .transforms
-            .into_iter()
+    pub fn compile(rules: &[TransformRuleFile]) -> anyhow::Result<Self> {
+        let transforms = rules
+            .iter()
+            .cloned()
             .map(TransformRule::try_from)
             .collect::<anyhow::Result<Vec<_>>>()?;
 
@@ -265,26 +258,19 @@ struct RuleApplyOutcome {
     body_changed: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct TransformFile {
+pub struct TransformRuleFile {
+    pub matcher: TransformMatcherFile,
+    pub action: TransformActionFile,
+    pub target: TransformTargetFile,
     #[serde(default)]
-    transforms: Vec<TransformRuleFile>,
+    pub stop: bool,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TransformRuleFile {
-    matcher: TransformMatcherFile,
-    action: TransformActionFile,
-    target: TransformTargetFile,
-    #[serde(default)]
-    stop: bool,
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum TransformMatcherFile {
+pub enum TransformMatcherFile {
     UrlGlob {
         pattern: String,
     },
@@ -295,15 +281,15 @@ enum TransformMatcherFile {
     Everything {},
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum TransformActionFile {
+pub enum TransformActionFile {
     Replace { from: String, to: String },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum TransformTargetFile {
+pub enum TransformTargetFile {
     #[serde(alias = "any")]
     Everything {},
     Body {},
@@ -383,6 +369,14 @@ pub fn normalized_content_type(headers: &HeaderMap) -> Option<String> {
                 .to_ascii_lowercase()
         })
         .filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TransformFile {
+    #[serde(default)]
+    transforms: Vec<TransformRuleFile>,
 }
 
 #[cfg(test)]

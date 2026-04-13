@@ -1,84 +1,70 @@
-# kidproxy
+# kid🐐proxy
 
-`kidproxy` is a single-backend HTTPS reverse proxy built with Rama and Rustls. It terminates frontend TLS, forwards traffic to one configured `https://` backend, preserves request and response flow as closely as practical by default, can apply ordered response transforms from a JSON config file, and writes one SQLite row per completed exchange.
+`kidproxy` is a single-backend HTTPS reverse proxy built with Rama and Rustls. It terminates frontend TLS, forwards traffic to one configured `https://` backend, records exchanges into SQLite, applies ordered response transforms, and now exposes a local Leptos admin UI for editing config and browsing captured results.
 
-## What v1 does
+## What It Does
 
 - Accepts HTTPS on one listen address with one frontend certificate.
 - Proxies to one fixed HTTPS backend with Rustls certificate verification.
 - Preserves method, path, query, status, headers, and streaming bodies by default.
-- Captures request, response, connection, timing, and TLS metadata.
-- Writes completed exchanges into one SQLite database with SeaORM-managed migrations.
-- Drops log events under pressure instead of blocking proxy traffic.
-- Supports ordered response transforms from a JSON config file for header, cookie, and body replacement.
+- Captures request, response, timing, and TLS metadata.
+- Writes completed exchanges into `proxy_events` in SQLite using in-process SeaORM migrations.
+- Supports ordered response transforms for headers, cookies, and body replacement.
+- Serves a localhost-only admin UI for:
+  - editing runtime settings and transforms
+  - saving config changes
+  - explicitly reloading the running proxy
+  - browsing recent SQLite rows and per-event details
 
-## What v1 does not do
+## Bootstrap CLI
 
-- Dynamic routing or multiple backends.
-- Impossible certificate mirroring between different frontend and backend hostnames.
-- Database sharding, partitioning, or segmented output files.
-
-## CLI
-
-All operational flags have `PROXY_*` environment variable equivalents via `clap` derive and `env`.
-
-Required flags:
-
-- `--listen-addr`
-- `--frontend-domain`
-- `--backend-url`
-- `--tls-cert-path`
-- `--tls-key-path`
-- `--sqlite-path`
-
-Useful optional flags:
+The CLI is now only for startup/bootstrap:
 
 - `--config-path`
-- `--ca-bundle-path`
-- `--upstream-sni-override`
-- `--http-mode auto|http1|http2`
-- `--flush-rows`
-- `--flush-interval-ms`
-- `--body-max-bytes`
-- `--trust-proxy-headers`
-- `--emit-keylog`
+- `--admin-listen-addr`
 
-## Run
+Environment equivalents:
+
+- `PROXY_CONFIG_PATH`
+- `PROXY_ADMIN_LISTEN_ADDR`
+
+Example:
 
 ```bash
 cargo run -- \
-  --listen-addr 0.0.0.0:8443 \
-  --frontend-domain example1.com \
-  --backend-url https://example2.com \
-  --tls-cert-path ./certs/fullchain.pem \
-  --tls-key-path ./certs/privkey.pem \
-  --sqlite-path ./data/kidproxy.sqlite \
-  --config-path ./config/transforms.json
+  --config-path ./kidproxy.json \
+  --admin-listen-addr 127.0.0.1:3000
 ```
 
-Environment example:
+The proxy runtime itself is loaded from `kidproxy.json`.
 
-```bash
-export PROXY_LISTEN_ADDR="0.0.0.0:8443"
-export PROXY_FRONTEND_DOMAIN="example1.com"
-export PROXY_BACKEND_URL="https://example2.com"
-export PROXY_TLS_CERT_PATH="./certs/fullchain.pem"
-export PROXY_TLS_KEY_PATH="./certs/privkey.pem"
-export PROXY_SQLITE_PATH="./data/kidproxy.sqlite"
-export PROXY_CONFIG_PATH="./config/transforms.json"
-cargo run --
-```
+## Config File
 
-## SQLite output
-
-The writer stores one row per completed exchange in the `proxy_events` table. Schema setup is handled by in-process SeaORM migrations only; the SeaORM CLI is not used.
-
-## Transform config
-
-When `--config-path` is set, `kidproxy` loads a JSON file containing an ordered `transforms` array. Each transform has a typed matcher, action, target, and optional `stop` flag.
+`kidproxy.json` contains both runtime settings and transforms:
 
 ```json
 {
+  "runtime": {
+    "listen_addr": "0.0.0.0:8443",
+    "frontend_domain": "example.test",
+    "backend_url": "https://backend.example",
+    "tls_cert_path": "./certs/fullchain.pem",
+    "tls_key_path": "./certs/privkey.pem",
+    "sqlite_path": "./data/kidproxy.sqlite",
+    "http_mode": "auto",
+    "flush_rows": 5000,
+    "flush_interval_ms": 2000,
+    "max_inflight_events": 10000,
+    "body_max_bytes": 65536,
+    "connect_timeout_ms": 5000,
+    "request_timeout_ms": 180000,
+    "idle_pool_timeout_ms": 90000,
+    "graceful_shutdown_timeout_ms": 10000,
+    "trust_proxy_headers": false,
+    "emit_keylog": false,
+    "header_allowlist": [],
+    "header_denylist": []
+  },
   "transforms": [
     {
       "matcher": { "type": "url_glob", "pattern": "/hello*" },
@@ -104,20 +90,43 @@ Supported target types:
 - `header`
 - `cookies`
 
-Only response-side transforms are supported in v1. Header and cookie transforms preserve streaming. Body and `any` transforms buffer the matched response before returning it to the client.
+Only response-side transforms are supported. Header and cookie transforms preserve streaming. Body and `any` transforms buffer the matched response before returning it to the client.
+
+## Admin UI
+
+Start the service, then open the admin UI at `http://127.0.0.1:3000` by default.
+
+Pages:
+
+- `/config`: edit runtime settings and ordered transforms, save, and reload
+- `/results`: filter recent rows from SQLite
+- `/results/:event_id`: inspect one captured exchange
+
+The admin server is separate from proxy reloads, so reloading the proxy does not stop the UI.
+
+## Tailwind CSS
+
+The admin UI stylesheet is generated from `admin/tailwind.css`.
+
+Build it with:
+
+```bash
+pnpm run build:css
+```
 
 ## Development
 
 Main modules:
 
-- `src/main.rs`: startup, tracing, probe, shutdown orchestration
-- `src/config.rs`: CLI to validated runtime config
-- `src/tls.rs`: Rustls frontend and upstream configuration
+- `src/main.rs`: bootstrap CLI, runtime manager startup, admin server
+- `src/config.rs`: file-backed app config and runtime validation
+- `src/runtime_manager.rs`: save/reload lifecycle for proxy and writer
+- `src/admin.rs`: Leptos admin pages and SQLite browsing
 - `src/proxy.rs`: Rama listener and reverse proxy path
 - `src/capture.rs`: exchange capture and body observers
 - `src/entity.rs`: SeaORM entity definitions
 - `src/migration.rs`: programmatic database migrations
-- `src/transform.rs`: transform config parsing, matching, and rewrite helpers
+- `src/transform.rs`: transform parsing, matching, and rewrite helpers
 - `src/writer.rs`: bounded writer task and SQLite flush logic
 - `src/probe.rs`: backend compatibility probe
 
@@ -132,7 +141,5 @@ Integration coverage lives in:
 
 - Backend URLs must use `https://`.
 - Header allowlists and denylists affect logged header JSON only, not forwarded traffic.
-- Request and response bodies are always hashed and retained up to `body_max_bytes`, with truncation recorded when the body exceeds that cap.
-- Response transforms are loaded only from the JSON config file; core runtime settings remain CLI/env-driven.
+- Request and response bodies are hashed and retained up to `body_max_bytes`, with truncation recorded when the body exceeds that cap.
 - JA3 and JA4 are only recorded when Rama exposes enough metadata on the active Rustls path; otherwise those fields are null.
-- The proxy aims to be protocol-boring, not magical. It will not spoof backend certificate identity for a different frontend hostname.

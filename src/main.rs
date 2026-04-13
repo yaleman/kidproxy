@@ -12,76 +12,51 @@
 
 use anyhow::Context;
 use clap::Parser;
+use std::net::SocketAddr;
 use tokio::signal;
-use tracing::{error, info, warn};
+use tower_http::services::ServeDir;
+use tracing::info;
 
+use kidproxy::admin::{self, AdminState};
 use kidproxy::cli::Cli;
-use kidproxy::config::RuntimeConfig;
+use kidproxy::runtime_manager::RuntimeManager;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
 
     let cli = Cli::parse();
-    let config = RuntimeConfig::try_from(cli).context("failed to build runtime config")?;
+    let admin_listen_addr: SocketAddr = cli
+        .admin_listen_addr
+        .parse()
+        .context("invalid admin listen address")?;
+    let runtime_manager = RuntimeManager::start(cli.config_path.clone())
+        .await
+        .context("failed to start runtime manager")?;
 
     info!(
-        listen_addr = %config.listen_addr,
-        frontend_domain = %config.frontend_domain,
-        backend_url = %config.backend_url,
-        sqlite_path = %config.sqlite_path.display(),
-        config_path = config
-            .config_path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "<none>".to_owned()),
-        transform_count = config.transforms.transforms.len(),
-        "starting proxy"
+        config_path = %cli.config_path.display(),
+        admin_listen_addr = %admin_listen_addr,
+        "starting admin server"
     );
 
-    let probe = match kidproxy::probe::probe_backend(&config).await {
-        Ok(probe) => {
-            info!(?probe, "backend probe complete");
-            probe
-        }
-        Err(err) => {
-            warn!(error = %err, "backend probe failed, continuing with defaults");
-            kidproxy::probe::BackendProbe::fallback(&config)
-        }
-    };
-
-    let writer = kidproxy::writer::spawn_writer(&config)
+    let app = admin::router(AdminState::new(runtime_manager.clone()))
+        .nest_service("/static", ServeDir::new("static"));
+    let listener = tokio::net::TcpListener::bind(admin_listen_addr)
         .await
-        .context("failed to start SQLite writer")?;
-    let proxy = kidproxy::proxy::ProxyApp::new(config.clone(), writer.clone(), probe)
+        .context("bind admin listener")?;
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let _ = signal::ctrl_c().await;
+        })
         .await
-        .context("failed to initialize proxy app")?;
-    let mut handle = Some(proxy.start().await.context("failed to start proxy app")?);
+        .context("admin server failed")?;
 
-    tokio::select! {
-        result = async {
-            let handle = handle
-                .take()
-                .context("proxy handle missing while waiting for completion")?;
-            handle.wait().await
-        } => {
-            match result {
-                Ok(()) => info!("proxy exited cleanly"),
-                Err(err) => error!(error = %err, "proxy exited with error"),
-            }
-        }
-        _ = signal::ctrl_c() => {
-            info!("shutdown signal received");
-            if let Some(handle) = handle.take()
-                && let Err(err) = handle.shutdown().await
-            {
-                error!(error = %err, "proxy shutdown failed");
-            }
-        }
-    }
-
-    writer.shutdown().await.context("writer shutdown failed")?;
-    info!("shutdown complete");
+    runtime_manager
+        .shutdown()
+        .await
+        .context("runtime manager shutdown failed")?;
 
     Ok(())
 }

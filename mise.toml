@@ -1,8 +1,11 @@
 [tasks.check]
-depends = ["clippy", "fmt"]
+depends = ["clippy", "fmt", "test"]
 
 [tasks.clippy]
 run = "cargo clippy --all-targets --workspace"
+
+[tasks.test]
+run = "cargo test --all-targets --workspace"
 
 [tasks.fmt]
 run = "cargo fmt --all"

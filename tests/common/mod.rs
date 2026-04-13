@@ -3,11 +3,12 @@
 use anyhow::{Context, anyhow};
 use bytes::Bytes;
 use futures::{StreamExt, stream};
-use kidproxy::cli::{Cli, HttpMode};
-use kidproxy::config::RuntimeConfig;
+use kidproxy::cli::HttpMode;
+use kidproxy::config::{AppConfigFile, HeaderLogPolicy, RuntimeConfig, RuntimeSettingsFile};
 use kidproxy::entity;
 use kidproxy::probe::{self, BackendProbe};
 use kidproxy::proxy::{ProxyApp, ProxyHandle};
+use kidproxy::transform::{TransformConfig, TransformRuleFile};
 use kidproxy::writer::{SqliteWriterHandle, spawn_writer};
 use rama::Layer;
 use rama::graceful::Shutdown;
@@ -20,6 +21,7 @@ use rama::tls::rustls::dep::pki_types::{CertificateDer, PrivateKeyDer};
 use rama::tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
 use rcgen::generate_simple_self_signed;
 use sea_orm::EntityTrait;
+use serde::Deserialize;
 use std::convert::Infallible;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
@@ -29,6 +31,7 @@ use std::sync::Once;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
 use tokio::sync::oneshot;
+use url::Url;
 
 #[derive(Clone)]
 pub struct TestCert {
@@ -93,6 +96,26 @@ impl ProxyHarness {
     }
 }
 
+pub struct AdminRuntimeHarness {
+    pub _tempdir: TempDir,
+    pub config_path: PathBuf,
+    pub frontend_cert: TestCert,
+    pub backend: BackendHarness,
+    pub app_config: AppConfigFile,
+}
+
+impl AdminRuntimeHarness {
+    pub fn proxy_addr(&self) -> anyhow::Result<SocketAddr> {
+        self.app_config
+            .to_runtime_config()
+            .map(|config| config.listen_addr)
+    }
+
+    pub async fn shutdown(&mut self) -> anyhow::Result<()> {
+        self.backend.shutdown().await
+    }
+}
+
 pub async fn start_proxy_harness(
     body_max_bytes: usize,
     flush_rows: usize,
@@ -115,31 +138,38 @@ pub async fn start_proxy_harness_with_config(
     )?;
     let backend = start_backend(tempdir.path()).await?;
 
-    let config = RuntimeConfig::try_from(Cli {
-        listen_addr: format!("127.0.0.1:{}", unused_port()?),
+    let backend_url = Url::parse(&format!("https://127.0.0.1:{}", backend.addr.port()))
+        .context("parse backend url")?;
+    let transforms = load_transform_config(config_path.as_deref())?;
+    let config = RuntimeConfig {
+        listen_addr: format!("127.0.0.1:{}", unused_port()?)
+            .parse()
+            .context("parse proxy listen addr")?,
         frontend_domain: "example.test".to_owned(),
-        backend_url: format!("https://127.0.0.1:{}", backend.addr.port()),
+        backend_url,
+        backend_host: "127.0.0.1".to_owned(),
+        backend_port: backend.addr.port(),
+        backend_authority: format!("127.0.0.1:{}", backend.addr.port()),
+        backend_path_prefix: "/".to_owned(),
         tls_cert_path: frontend_cert.cert_path.clone(),
         tls_key_path: frontend_cert.key_path.clone(),
         sqlite_path: PathBuf::from(":memory:"),
-        config_path,
         ca_bundle_path: Some(backend.cert.cert_path.clone()),
-        upstream_sni_override: Some("127.0.0.1".to_owned()),
+        upstream_sni: "127.0.0.1".to_owned(),
         http_mode: HttpMode::Http1,
         flush_rows,
-        flush_interval_ms: 100,
+        flush_interval: std::time::Duration::from_millis(100),
         max_inflight_events: 1024,
         body_max_bytes,
-        connect_timeout_ms: 2_000,
-        request_timeout_ms: 10_000,
-        idle_pool_timeout_ms: 2_000,
-        graceful_shutdown_timeout_ms: 2_000,
+        connect_timeout: std::time::Duration::from_millis(2_000),
+        request_timeout: std::time::Duration::from_millis(10_000),
+        idle_pool_timeout: std::time::Duration::from_millis(2_000),
+        graceful_shutdown_timeout: std::time::Duration::from_millis(2_000),
         trust_proxy_headers: false,
         emit_keylog: false,
-        header_allowlist: Vec::new(),
-        header_denylist: Vec::new(),
-    })
-    .context("build test runtime config")?;
+        header_log_policy: HeaderLogPolicy::default(),
+        transforms,
+    };
 
     let probe = probe::probe_backend(&config)
         .await
@@ -158,6 +188,60 @@ pub async fn start_proxy_harness_with_config(
         config,
         writer,
         handle: Some(handle),
+    })
+}
+
+pub async fn start_admin_runtime_harness() -> anyhow::Result<AdminRuntimeHarness> {
+    init_test_crypto_provider();
+
+    let tempdir = TempDir::new().context("create admin test tempdir")?;
+    let frontend_cert = write_test_cert(
+        tempdir.path(),
+        "frontend",
+        &["proxy.local".to_owned(), "127.0.0.1".to_owned()],
+    )?;
+    let backend = start_backend(tempdir.path()).await?;
+    let listen_addr = format!("127.0.0.1:{}", unused_port()?);
+    let sqlite_path = tempdir.path().join("admin-results.sqlite");
+    let config_path = tempdir.path().join("kidproxy.json");
+
+    let app_config = AppConfigFile {
+        runtime: RuntimeSettingsFile {
+            listen_addr,
+            frontend_domain: "proxy.local".to_owned(),
+            backend_url: format!("https://127.0.0.1:{}", backend.addr.port()),
+            tls_cert_path: frontend_cert.cert_path.clone(),
+            tls_key_path: frontend_cert.key_path.clone(),
+            sqlite_path,
+            ca_bundle_path: Some(backend.cert.cert_path.clone()),
+            upstream_sni_override: Some("127.0.0.1".to_owned()),
+            http_mode: HttpMode::Http1,
+            flush_rows: 1,
+            flush_interval_ms: 50,
+            max_inflight_events: 256,
+            body_max_bytes: 1024,
+            connect_timeout_ms: 2_000,
+            request_timeout_ms: 10_000,
+            idle_pool_timeout_ms: 2_000,
+            graceful_shutdown_timeout_ms: 2_000,
+            trust_proxy_headers: false,
+            emit_keylog: false,
+            header_allowlist: Vec::new(),
+            header_denylist: Vec::new(),
+        },
+        transforms: Vec::new(),
+    };
+
+    app_config
+        .write_json(&config_path)
+        .context("write admin test config")?;
+
+    Ok(AdminRuntimeHarness {
+        _tempdir: tempdir,
+        config_path,
+        frontend_cert,
+        backend,
+        app_config,
     })
 }
 
@@ -205,6 +289,24 @@ fn write_test_cert(base: &Path, name: &str, sans: &[String]) -> anyhow::Result<T
         key_path,
         cert_pem,
     })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TransformFixture {
+    #[serde(default)]
+    transforms: Vec<TransformRuleFile>,
+}
+
+fn load_transform_config(path: Option<&Path>) -> anyhow::Result<TransformConfig> {
+    let Some(path) = path else {
+        return Ok(TransformConfig::default());
+    };
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("read transform fixture {}", path.display()))?;
+    let fixture: TransformFixture = serde_json::from_str(&contents)
+        .with_context(|| format!("parse transform fixture {}", path.display()))?;
+    TransformConfig::compile(&fixture.transforms)
 }
 
 async fn start_backend(base: &Path) -> anyhow::Result<BackendHarness> {

@@ -2,7 +2,7 @@
 .DS_Store
 .env
 .envrc
+node_modules/
 *.asc
 target/
 data/
-kidproxy.json

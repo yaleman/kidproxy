@@ -21,6 +21,8 @@ use rama::tcp::{TcpStream, client::service::TcpConnector, server::TcpListener};
 use rama::tls::rustls::server::TlsAcceptorLayer;
 use rama::{Layer, Service};
 use std::convert::Infallible;
+use std::future::Future;
+use std::pin::Pin;
 use tokio::sync::oneshot;
 use tracing::{info, warn};
 
@@ -119,69 +121,68 @@ impl ProxyApp {
                 "proxy listener ready"
             );
 
-            let mut serve_task = match http_mode {
-                ResolvedHttpMode::Auto => {
-                    let http_service = HttpServer::auto(exec).service(service_fn(move |req| {
-                        let service = service.clone();
-                        async move { service.handle(req).await }
-                    }));
-                    tokio::spawn(async move {
-                        listener
-                            .serve_graceful(
-                                serve_guard,
-                                TlsAcceptorLayer::new(frontend_tls.acceptor_data)
-                                    .into_layer(http_service),
-                            )
-                            .await;
-                        Ok::<(), anyhow::Error>(())
-                    })
-                }
-                ResolvedHttpMode::Http1 => {
-                    let http_service = HttpServer::http1().service(service_fn(move |req| {
-                        let service = service.clone();
-                        async move { service.handle(req).await }
-                    }));
-                    tokio::spawn(async move {
-                        listener
-                            .serve_graceful(
-                                serve_guard,
-                                TlsAcceptorLayer::new(frontend_tls.acceptor_data)
-                                    .into_layer(http_service),
-                            )
-                            .await;
-                        Ok::<(), anyhow::Error>(())
-                    })
-                }
-                ResolvedHttpMode::Http2 => {
-                    let http_service = HttpServer::h2(exec).service(service_fn(move |req| {
-                        let service = service.clone();
-                        async move { service.handle(req).await }
-                    }));
-                    tokio::spawn(async move {
-                        listener
-                            .serve_graceful(
-                                serve_guard,
-                                TlsAcceptorLayer::new(frontend_tls.acceptor_data)
-                                    .into_layer(http_service),
-                            )
-                            .await;
-                        Ok::<(), anyhow::Error>(())
-                    })
-                }
-            };
+            let mut serve_future: Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> =
+                match http_mode {
+                    ResolvedHttpMode::Auto => {
+                        let http_service = HttpServer::auto(exec).service(service_fn(move |req| {
+                            let service = service.clone();
+                            async move { service.handle(req).await }
+                        }));
+                        Box::pin(async move {
+                            listener
+                                .serve_graceful(
+                                    serve_guard,
+                                    TlsAcceptorLayer::new(frontend_tls.acceptor_data)
+                                        .into_layer(http_service),
+                                )
+                                .await;
+                            Ok(())
+                        })
+                    }
+                    ResolvedHttpMode::Http1 => {
+                        let http_service = HttpServer::http1().service(service_fn(move |req| {
+                            let service = service.clone();
+                            async move { service.handle(req).await }
+                        }));
+                        Box::pin(async move {
+                            listener
+                                .serve_graceful(
+                                    serve_guard,
+                                    TlsAcceptorLayer::new(frontend_tls.acceptor_data)
+                                        .into_layer(http_service),
+                                )
+                                .await;
+                            Ok(())
+                        })
+                    }
+                    ResolvedHttpMode::Http2 => {
+                        let http_service = HttpServer::h2(exec).service(service_fn(move |req| {
+                            let service = service.clone();
+                            async move { service.handle(req).await }
+                        }));
+                        Box::pin(async move {
+                            listener
+                                .serve_graceful(
+                                    serve_guard,
+                                    TlsAcceptorLayer::new(frontend_tls.acceptor_data)
+                                        .into_layer(http_service),
+                                )
+                                .await;
+                            Ok(())
+                        })
+                    }
+                };
 
             tokio::select! {
-                result = &mut serve_task => {
-                    result.map_err(|err| anyhow!("proxy serve task join failure: {err}"))??;
+                result = &mut serve_future => {
+                    result?;
                 }
                 _ = stop_rx => {
                     shutdown
                         .shutdown_with_limit(cfg.graceful_shutdown_timeout)
                         .await
                         .context("graceful proxy shutdown failed")?;
-                    serve_task
-                        .await
-                        .map_err(|err| anyhow!("proxy serve task join failure: {err}"))??;
+                    serve_future.await?;
                 }
             }
 

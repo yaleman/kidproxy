@@ -73,8 +73,18 @@ impl SqliteWriterHandle {
     }
 
     pub async fn shutdown(&self) -> anyhow::Result<()> {
-        let (tx, rx) = oneshot::channel();
-        let _ = self.tx.send(WriterMessage::Shutdown(tx)).await;
+        let (done_tx, rx) = oneshot::channel();
+        let mut message = Some(WriterMessage::Shutdown(done_tx));
+        while let Some(pending) = message.take() {
+            match self.tx.try_send(pending) {
+                Ok(()) => break,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(pending)) => {
+                    message = Some(pending);
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+            }
+        }
         let _ = rx.await;
         info!(
             dropped_events = self.dropped_events(),
@@ -373,7 +383,6 @@ mod tests {
             tls_cert_path: PathBuf::from("unused-cert.pem"),
             tls_key_path: PathBuf::from("unused-key.pem"),
             sqlite_path: PathBuf::from(":memory:"),
-            config_path: None,
             ca_bundle_path: None,
             upstream_sni: "backend.test".to_owned(),
             http_mode: HttpMode::Http1,
