@@ -214,6 +214,39 @@ async fn matched_body_rule_buffers_streaming_response() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn body_capable_transform_forces_identity_upstream_encoding() -> anyhow::Result<()> {
+    let tempdir = TempDir::new().context("create tempdir")?;
+    let config_path = write_transform_config(
+        &tempdir,
+        json!({
+            "transforms": [
+                {
+                    "matcher": { "type": "any" },
+                    "action": { "type": "replace", "from": "backend", "to": "proxy" },
+                    "target": { "type": "body" }
+                }
+            ]
+        }),
+    )?;
+    let mut harness = start_proxy_harness_with_config(1024, 1, Some(config_path)).await?;
+    let client = test_client(&harness.frontend_cert.cert_pem, harness.proxy_addr())?;
+
+    let response = client
+        .get(proxy_url(harness.proxy_addr(), "/echo-accept-encoding"))
+        .header("host", "example.test")
+        .send()
+        .await
+        .context("send accept-encoding inspection request")?;
+
+    assert_eq!(
+        response.text().await.context("read accept-encoding body")?,
+        "identity"
+    );
+
+    harness.shutdown().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stop_rule_prevents_later_rules() -> anyhow::Result<()> {
     let tempdir = TempDir::new().context("create tempdir")?;
     let config_path = write_transform_config(

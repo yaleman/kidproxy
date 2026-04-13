@@ -94,17 +94,17 @@ Supported matcher types:
 
 - `url_glob`
 - `content_type_glob`
-- `everything`
+- `any`
 
 Supported target types:
 
-- `everything`
+- `any`
 - `body`
 - `all_headers`
 - `header`
 - `cookies`
 
-Only response-side transforms are supported in v1. Header and cookie transforms preserve streaming. Body and `everything` transforms buffer the matched response before returning it to the client.
+Only response-side transforms are supported in v1. Header and cookie transforms preserve streaming. Body and `any` transforms buffer the matched response before returning it to the client.
 
 ## Development
 

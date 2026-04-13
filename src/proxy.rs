@@ -22,7 +22,7 @@ use rama::tls::rustls::server::TlsAcceptorLayer;
 use rama::{Layer, Service};
 use std::convert::Infallible;
 use tokio::sync::oneshot;
-use tracing::info;
+use tracing::{info, warn};
 
 pub struct ProxyApp {
     cfg: RuntimeConfig,
@@ -205,8 +205,15 @@ struct ProxyService {
 impl ProxyService {
     async fn handle(&self, req: Request) -> Result<Response, Infallible> {
         let capture = SharedExchangeCapture::new(&self.cfg, &req);
+        let method = req.method().to_string();
 
         if !host_matches_frontend(&req, &self.cfg.frontend_domain) {
+            warn!(
+                method = %method,
+                host = ?req.headers().get(rama::http::header::HOST).and_then(|value| value.to_str().ok()),
+                frontend_domain = %self.cfg.frontend_domain,
+                "rejecting request with mismatched host"
+            );
             capture.set_rejection(
                 StatusCode::MISDIRECTED_REQUEST,
                 ErrorInfo::new(
@@ -222,6 +229,18 @@ impl ProxyService {
         }
 
         let request_url = request_url(req.uri().path(), req.uri().query());
+        let force_identity_encoding = self
+            .cfg
+            .transforms
+            .needs_plaintext_upstream_body(&request_url);
+
+        info!(
+            method = %method,
+            request_url = %request_url,
+            transform_count = self.cfg.transforms.transforms.len(),
+            force_identity_encoding,
+            "proxy request started"
+        );
 
         let (mut parts, body) = req.into_parts();
         let upstream_uri = match self
@@ -244,6 +263,12 @@ impl ProxyService {
 
         parts.uri = upstream_uri;
         parts.headers.remove(rama::http::header::HOST);
+        if force_identity_encoding {
+            parts.headers.insert(
+                header::ACCEPT_ENCODING,
+                header::HeaderValue::from_static("identity"),
+            );
+        }
         strip_hop_by_hop_headers(&mut parts.headers);
 
         let observed_request_body = Body::new(ObservedBody::request(body, capture.clone()));
@@ -259,12 +284,23 @@ impl ProxyService {
         let upstream_response = match upstream_result {
             Ok(Ok(resp)) => resp,
             Ok(Err(err)) => {
+                warn!(
+                    method = %method,
+                    request_url = %request_url,
+                    error = %err,
+                    "upstream request failed"
+                );
                 capture
                     .set_upstream_error(ErrorInfo::from_display(ErrorKind::UpstreamProtocol, err));
                 capture.finalize_and_send(&self.writer);
                 return Ok(make_gateway_error(StatusCode::BAD_GATEWAY, "bad gateway"));
             }
             Err(_) => {
+                warn!(
+                    method = %method,
+                    request_url = %request_url,
+                    "upstream request timed out"
+                );
                 capture.set_upstream_error(ErrorInfo::new(
                     ErrorKind::Timeout,
                     "upstream request timed out",
@@ -307,12 +343,25 @@ impl ProxyService {
                     )),
                 );
                 capture.set_upstream_response(&self.cfg, &response, response_started_at);
+                info!(
+                    method = %method,
+                    request_url = %request_url,
+                    status = %response.status(),
+                    buffered_body = false,
+                    "proxy response ready"
+                );
                 Ok(response)
             }
             PrebufferDisposition::BufferFrom(start_index) => {
                 let collected = match response_body.collect().await {
                     Ok(collected) => collected.to_bytes().to_vec(),
                     Err(err) => {
+                        warn!(
+                            method = %method,
+                            request_url = %request_url,
+                            error = %err,
+                            "failed to buffer upstream response body"
+                        );
                         capture.set_upstream_error(ErrorInfo::from_display(
                             ErrorKind::UpstreamProtocol,
                             err,
@@ -329,6 +378,12 @@ impl ProxyService {
                     &mut body_bytes,
                 );
                 if let Err(err) = apply_result {
+                    warn!(
+                        method = %method,
+                        request_url = %request_url,
+                        error = %err,
+                        "failed to apply response transform"
+                    );
                     capture.set_upstream_error(ErrorInfo::from_display(ErrorKind::Internal, err));
                     capture.finalize_and_send(&self.writer);
                     return Ok(make_gateway_error(StatusCode::BAD_GATEWAY, "bad gateway"));
@@ -360,6 +415,13 @@ impl ProxyService {
                     )),
                 );
                 capture.set_upstream_response(&self.cfg, &response, response_started_at);
+                info!(
+                    method = %method,
+                    request_url = %request_url,
+                    status = %response.status(),
+                    buffered_body = true,
+                    "proxy response ready"
+                );
                 Ok(response)
             }
         }

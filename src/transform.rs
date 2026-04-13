@@ -139,6 +139,16 @@ impl TransformConfig {
             body_changed,
         })
     }
+
+    pub fn needs_plaintext_upstream_body(&self, request_url: &str) -> bool {
+        self.transforms.iter().any(|rule| {
+            rule.requires_body()
+                && match &rule.matcher {
+                    TransformMatcher::UrlGlob(pattern) => pattern.matches(request_url),
+                    TransformMatcher::ContentTypeGlob(_) | TransformMatcher::Everything => true,
+                }
+        })
+    }
 }
 
 impl TransformRule {
@@ -275,8 +285,13 @@ struct TransformRuleFile {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum TransformMatcherFile {
-    UrlGlob { pattern: String },
-    ContentTypeGlob { pattern: String },
+    UrlGlob {
+        pattern: String,
+    },
+    ContentTypeGlob {
+        pattern: String,
+    },
+    #[serde(alias = "any")]
     Everything {},
 }
 
@@ -289,10 +304,13 @@ enum TransformActionFile {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum TransformTargetFile {
+    #[serde(alias = "any")]
     Everything {},
     Body {},
     AllHeaders {},
-    Header { name: String },
+    Header {
+        name: String,
+    },
     Cookies {},
 }
 

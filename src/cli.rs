@@ -20,7 +20,11 @@ pub struct Cli {
     #[arg(long, env = "PROXY_TLS_KEY_PATH")]
     pub tls_key_path: PathBuf,
 
-    #[arg(long, env = "PROXY_SQLITE_PATH")]
+    #[arg(
+        long,
+        env = "PROXY_SQLITE_PATH",
+        default_value = "./data/kidproxy.sqlite"
+    )]
     pub sqlite_path: PathBuf,
 
     #[arg(long, env = "PROXY_CONFIG_PATH")]

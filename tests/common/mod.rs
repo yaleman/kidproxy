@@ -149,6 +149,7 @@ pub async fn start_proxy_harness_with_config(
         .await
         .context("create proxy app")?;
     let handle = app.start().await.context("start proxy app")?;
+    wait_for_listener(config.listen_addr).await?;
 
     Ok(ProxyHarness {
         _tempdir: tempdir,
@@ -304,6 +305,15 @@ async fn backend_response(req: Request, hits: Arc<AtomicUsize>) -> Result<Respon
             );
             response
         }
+        "/echo-accept-encoding" => {
+            let body = req
+                .headers()
+                .get(header::ACCEPT_ENCODING)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("<none>")
+                .to_owned();
+            Response::new(Body::from(body))
+        }
         "/redirect" => {
             let mut response = Response::new(Body::empty());
             *response.status_mut() = StatusCode::FOUND;
@@ -392,6 +402,24 @@ fn unused_port() -> anyhow::Result<u16> {
         .context("read port probe local addr")?
         .port();
     Ok(port)
+}
+
+async fn wait_for_listener(addr: SocketAddr) -> anyhow::Result<()> {
+    let started = std::time::Instant::now();
+    loop {
+        match tokio::net::TcpStream::connect(addr).await {
+            Ok(stream) => {
+                drop(stream);
+                return Ok(());
+            }
+            Err(err) => {
+                if started.elapsed() > std::time::Duration::from_secs(2) {
+                    return Err(anyhow!("proxy listener did not become ready: {err}"));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        }
+    }
 }
 
 fn init_test_crypto_provider() {

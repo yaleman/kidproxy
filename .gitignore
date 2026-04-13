@@ -5,3 +5,4 @@
 *.asc
 target/
 data/
+kidproxy.json

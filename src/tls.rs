@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
+use std::sync::Once;
 use time::OffsetDateTime;
 use x509_parser::prelude::FromDer;
 
@@ -55,6 +56,7 @@ pub fn build_frontend_tls(
     cfg: &RuntimeConfig,
     http_mode: ResolvedHttpMode,
 ) -> anyhow::Result<FrontendTlsConfig> {
+    ensure_rustls_crypto_provider();
     let cert_chain = load_cert_chain(&cfg.tls_cert_path)?;
     let private_key = load_private_key(&cfg.tls_key_path)?;
 
@@ -82,6 +84,7 @@ pub fn build_upstream_tls(
     cfg: &RuntimeConfig,
     http_mode: ResolvedHttpMode,
 ) -> anyhow::Result<UpstreamTlsConfig> {
+    ensure_rustls_crypto_provider();
     let mut client_config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
         .with_root_certificates(load_root_store(cfg)?)
         .with_no_client_auth();
@@ -111,6 +114,15 @@ pub fn build_upstream_tls(
         .build();
 
     Ok(UpstreamTlsConfig { connector_data })
+}
+
+fn ensure_rustls_crypto_provider() {
+    static INIT: Once = Once::new();
+
+    INIT.call_once(|| {
+        let _ =
+            rama::tls::rustls::dep::rustls::crypto::aws_lc_rs::default_provider().install_default();
+    });
 }
 
 pub fn frontend_tls_metadata(extensions: &Extensions) -> FrontendTlsMetadata {
