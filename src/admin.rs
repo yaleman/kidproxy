@@ -46,18 +46,16 @@ async fn index() -> Redirect {
 
 async fn config_page(State(state): State<AdminState>) -> Response {
     let runtime_manager = state.runtime_manager.clone();
-    match runtime_manager.state().await {
-        snapshot => {
-            render_runtime_config(snapshot.saved_config.clone(), snapshot, None, Vec::new())
-        }
-    }
+    let snapshot = runtime_manager.state().await;
+
+    render_runtime_config(snapshot.saved_config.clone(), snapshot, None, Vec::new())
 }
 
 async fn transforms_page(State(state): State<AdminState>) -> Response {
     let runtime_manager = state.runtime_manager.clone();
-    match runtime_manager.state().await {
-        snapshot => render_transforms(snapshot.saved_config.clone(), snapshot, None, Vec::new()),
-    }
+    let snapshot = runtime_manager.state().await;
+
+    render_transforms(snapshot.saved_config.clone(), snapshot, None, Vec::new())
 }
 
 fn config_submit(
