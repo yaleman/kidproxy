@@ -1,9 +1,6 @@
 use crate::config::RuntimeConfig;
 use crate::proxy::build_upstream_client;
-use crate::tls::backend_tls_metadata;
-use rama::extensions::Extension;
 use rama::http::service::client::HttpClientExt;
-use rama::{error::ErrorContext, extensions::ExtensionsRef};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 

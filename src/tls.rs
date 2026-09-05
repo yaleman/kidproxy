@@ -1,34 +1,20 @@
 use crate::config::{ResolvedHttpMode, RuntimeConfig};
 use anyhow::{Context, bail};
+use rama::crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama::extensions::Extensions;
 use rama::net::address::Host;
-use rama::net::tls::{
-    ApplicationProtocol, DataEncoding, KeyLogIntent, SecureTransport,
-    client::NegotiatedTlsParameters,
-};
+
+use rama::tls::client::{NegotiatedTlsParameters, TlsClientConfig};
 use rama::tls::fingerprint::{Ja3, Ja4};
-use rama::tls::rustls::client::{TlsConnectorData, TlsConnectorDataBuilder};
-use rama::tls::rustls::dep::pki_types::{CertificateDer, PrivateKeyDer};
-use rama::tls::rustls::dep::rustls::{ALL_VERSIONS, ClientConfig, RootCertStore};
-use rama::tls::rustls::key_log::KeyLogFile;
-use rama::tls::rustls::server::{TlsAcceptorData, TlsAcceptorDataBuilder};
+use rama::tls::{KeyLogIntent, SecureTransport};
+
+use rama::tls::server::TlsServerConfig;
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::BufReader;
-use std::sync::Arc;
 use std::sync::Once;
 use time::OffsetDateTime;
 use x509_parser::prelude::FromDer;
-
-#[derive(Debug, Clone)]
-pub struct FrontendTlsConfig {
-    pub acceptor_data: TlsAcceptorData,
-}
-
-#[derive(Debug, Clone)]
-pub struct UpstreamTlsConfig {
-    pub connector_data: TlsConnectorData,
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct FrontendTlsMetadata {
@@ -56,65 +42,55 @@ pub struct BackendTlsMetadata {
 pub fn build_frontend_tls(
     cfg: &RuntimeConfig,
     http_mode: ResolvedHttpMode,
-) -> anyhow::Result<FrontendTlsConfig> {
+) -> anyhow::Result<TlsServerConfig> {
     ensure_rustls_crypto_provider();
     let cert_chain = load_cert_chain(&cfg.tls_cert_path)?;
     let private_key = load_private_key(&cfg.tls_key_path)?;
 
-    let mut builder = TlsAcceptorDataBuilder::new(cert_chain, private_key)
-        .context("create frontend rustls acceptor")?;
+    let mut builder = TlsServerConfig::new().with_single_cert(rama::tls::server::ServerAuthData {
+        private_key,
+        cert_chain,
+        ocsp: None,
+    });
 
     builder = match http_mode {
-        ResolvedHttpMode::Auto => builder.with_alpn_protocols_http_auto(),
-        ResolvedHttpMode::Http1 => builder.with_alpn_protocols(&[ApplicationProtocol::HTTP_11]),
-        ResolvedHttpMode::Http2 => builder.with_alpn_protocols(&[ApplicationProtocol::HTTP_2]),
+        ResolvedHttpMode::Auto => builder.with_alpn_http_auto(),
+        ResolvedHttpMode::Http1 => builder.with_alpn_http_1(),
+        ResolvedHttpMode::Http2 => builder.with_alpn_http_2(),
     };
 
     if cfg.emit_keylog {
-        builder = builder
-            .try_with_env_key_logger()
-            .context("enable frontend key logger")?;
+        builder = builder.with_keylog(rama::tls::KeyLogIntent::Environment)
     }
 
-    Ok(FrontendTlsConfig {
-        acceptor_data: builder.build(),
-    })
+    Ok(builder.to_owned())
 }
 
 pub fn build_upstream_tls(
     cfg: &RuntimeConfig,
     http_mode: ResolvedHttpMode,
-) -> anyhow::Result<UpstreamTlsConfig> {
+) -> anyhow::Result<TlsClientConfig> {
     ensure_rustls_crypto_provider();
-    let mut client_config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
-        .with_root_certificates(load_root_store(cfg)?)
-        .with_no_client_auth();
+    let mut client_config = TlsClientConfig::new() // .withbuilder_with_protocol_versions(ALL_VERSIONS)        .
+        .try_with_extra_server_trust_anchors(load_root_store(cfg)?)
+        .map_err(|err| anyhow::anyhow!("failed to load root cert store: {err}"))?;
 
-    client_config.alpn_protocols = match http_mode {
-        ResolvedHttpMode::Auto => vec![
-            ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
-            ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
-        ],
-        ResolvedHttpMode::Http1 => vec![ApplicationProtocol::HTTP_11.as_bytes().to_vec()],
-        ResolvedHttpMode::Http2 => vec![ApplicationProtocol::HTTP_2.as_bytes().to_vec()],
+    client_config = match http_mode {
+        ResolvedHttpMode::Auto => client_config.with_alpn_http_auto(),
+        ResolvedHttpMode::Http1 => client_config.with_alpn_http_1(),
+        ResolvedHttpMode::Http2 => client_config.with_alpn_http_2(),
     };
 
-    if cfg.emit_keylog
-        && let Some(path) = KeyLogIntent::Environment.file_path()
-    {
-        client_config.key_log =
-            Arc::new(KeyLogFile::try_new(path.as_ref()).context("enable upstream key logger")?);
+    if cfg.emit_keylog {
+        client_config.set_keylog(KeyLogIntent::Environment);
     }
 
-    let connector_data = TlsConnectorDataBuilder::from(client_config)
-        .with_server_name(
-            Host::try_from(cfg.upstream_sni.as_str())
-                .map_err(|err| anyhow::anyhow!("invalid upstream SNI host: {err}"))?,
-        )
-        .with_store_server_certificate_chain(true)
-        .build();
+    let server_name = Host::try_from(cfg.upstream_sni.as_str())
+        .map_err(|err| anyhow::anyhow!("invalid upstream SNI host: {err}"))?;
 
-    Ok(UpstreamTlsConfig { connector_data })
+    Ok(client_config
+        .with_server_name(server_name)
+        .with_store_server_cert_chain(true))
 }
 
 fn ensure_rustls_crypto_provider() {
@@ -172,12 +148,8 @@ pub fn backend_tls_metadata(extensions: &Extensions, configured_sni: &str) -> Ba
     metadata
 }
 
-fn populate_cert_metadata(metadata: &mut BackendTlsMetadata, chain: &DataEncoding) {
-    let first_cert = match chain {
-        DataEncoding::DerStack(chain) => chain.first(),
-        DataEncoding::Der(der) => Some(der),
-        DataEncoding::Pem(_) => None,
-    };
+fn populate_cert_metadata(metadata: &mut BackendTlsMetadata, chain: &Vec<CertificateDer>) {
+    let first_cert = chain.into_iter().next();
 
     let Some(leaf_der) = first_cert else {
         return;
@@ -193,30 +165,28 @@ fn populate_cert_metadata(metadata: &mut BackendTlsMetadata, chain: &DataEncodin
     }
 }
 
-fn load_root_store(cfg: &RuntimeConfig) -> anyhow::Result<RootCertStore> {
-    let mut store = RootCertStore::empty();
+fn load_root_store(cfg: &RuntimeConfig) -> anyhow::Result<Vec<CertificateDer<'static>>> {
+    let mut certs = Vec::new();
 
     let native = rustls_native_certs::load_native_certs();
     for error in native.errors {
         tracing::warn!(error = %error, "failed to load a native CA certificate");
     }
     for cert in native.certs {
-        let _ = store.add(cert);
+        certs.push(cert);
     }
 
     if let Some(path) = &cfg.ca_bundle_path {
         for cert in load_cert_chain(path)? {
-            store
-                .add(cert)
-                .map_err(|err| anyhow::anyhow!("failed to add CA certificate: {err}"))?;
+            certs.push(cert);
         }
     }
 
-    if store.is_empty() {
+    if certs.is_empty() {
         bail!("no trust roots were loaded for upstream TLS verification");
     }
 
-    Ok(store)
+    Ok(certs)
 }
 
 fn load_cert_chain(path: &std::path::Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
@@ -298,11 +268,10 @@ mod tests {
             transforms: TransformConfig::default(),
         };
 
-        let frontend = build_frontend_tls(&cfg, ResolvedHttpMode::Http1)?;
-        let upstream = build_upstream_tls(&cfg, ResolvedHttpMode::Http1)?;
-
-        let _ = frontend.acceptor_data;
-        let _ = upstream.connector_data;
+        build_frontend_tls(&cfg, ResolvedHttpMode::Http1)
+            .expect("Failed to build http1 frontend TLS");
+        build_upstream_tls(&cfg, ResolvedHttpMode::Http1)
+            .expect("Failed to build http1 upstream TLS");
 
         Ok(())
     }

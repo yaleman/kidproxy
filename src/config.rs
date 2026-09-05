@@ -276,7 +276,7 @@ impl RuntimeConfig {
         };
 
         url.set_path(&combined_path);
-        url.set_query(query);
+        url.set_query(query.as_deref());
         url.set_fragment(None);
 
         url.as_str()
@@ -430,7 +430,7 @@ mod tests {
         assert!(config.header_log_policy.allows("x-test"));
         assert!(!config.header_log_policy.allows("x-drop"));
 
-        let uri = config.build_backend_uri("/hello", Some("a=1"))?;
+        let uri = config.build_backend_uri("/hello", Some("a=1".to_string()))?;
         assert_eq!(uri.to_string(), "https://backend.example/base/hello?a=1");
 
         Ok(())

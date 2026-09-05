@@ -1,9 +1,7 @@
 use crate::config::RuntimeConfig;
 use crate::error::{ErrorInfo, ErrorKind, ProxyResult};
 use crate::event::ProxyEvent;
-use crate::tls::{
-    BackendTlsMetadata, FrontendTlsMetadata, backend_tls_metadata, frontend_tls_metadata,
-};
+use crate::tls::{BackendTlsMetadata, FrontendTlsMetadata, frontend_tls_metadata};
 use crate::writer::SqliteWriterHandle;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -137,14 +135,15 @@ impl SharedExchangeCapture {
         ));
         guard.proxy_result = ProxyResult::Success;
 
-        if let Some(input_extensions) = resp.extensions().get_arc::<InputExtensions>() {
-            let ext = &input_extensions.0;
-            if let Some(socket) = ext.get_arc::<ClientSocketInfo>() {
-                guard.backend_ip = Some(socket.peer_addr().ip().to_string());
-                guard.backend_port = Some(socket.peer_addr().port());
-            }
-            guard.backend_tls = backend_tls_metadata(ext, &cfg.upstream_sni);
-        }
+        // TODO: figure this shit out for rama
+        // if let Some(input_extensions) = resp.extensions().get_arc::<InputExtensions>() {
+        //     let ext = &input_extensions.0;
+        //     if let Some(socket) = ext.get_arc::<ClientSocketInfo>() {
+        //         guard.backend_ip = Some(socket.peer_addr().ip().to_string());
+        //         guard.backend_port = Some(socket.peer_addr().port());
+        //     }
+        //     guard.backend_tls = backend_tls_metadata(ext, &cfg.upstream_sni);
+        // }
     }
 
     pub fn set_upstream_error(&self, error: ErrorInfo) {

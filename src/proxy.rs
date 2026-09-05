@@ -10,15 +10,17 @@ use crate::transform::{PrebufferDisposition, request_url};
 use crate::writer::SqliteWriterHandle;
 use anyhow::{Context, anyhow};
 use rama::graceful::Shutdown;
-use rama::http::client::EasyHttpConnectorBuilder;
+use rama::http::client::{EasyHttpConnectorBuilder, HttpPooledConnectorConfig};
 use rama::http::{
-    Body, Request, Response, StatusCode, body::util::BodyExt, client::EasyHttpWebClient, header,
+    Body, Request, Response, StatusCode, body::util::BodyExt, header,
     layer::required_header::AddRequiredRequestHeadersLayer, server::HttpServer,
 };
 use rama::rt::Executor;
 use rama::service::{BoxService, service_fn};
-use rama::tcp::{TcpStream, client::service::TcpConnector, server::TcpListener};
+use rama::tcp::server::TcpListenerBuilder;
+use rama::tcp::{TcpStream, client::service::TcpConnector};
 use rama::tls::rustls::server::TlsAcceptorLayer;
+use rama::tls::server::TlsServerConfig;
 use rama::{Layer, Service};
 use std::convert::Infallible;
 use std::future::Future;
@@ -32,7 +34,7 @@ pub struct ProxyApp {
     probe: BackendProbe,
     http_mode: ResolvedHttpMode,
     upstream_client: BoxService<Request, Response, rama::error::BoxError>,
-    frontend_tls: crate::tls::FrontendTlsConfig,
+    frontend_tls: TlsServerConfig,
 }
 
 pub struct ProxyHandle {
@@ -94,12 +96,15 @@ impl ProxyApp {
         let probe = self.probe.clone();
         let http_mode = self.http_mode;
         let upstream_client = self.upstream_client.clone();
-        let frontend_tls = self.frontend_tls.clone();
+        // let frontend_tls = self.frontend_tls.clone();
 
         let task = tokio::spawn(async move {
             let shutdown = Shutdown::default();
-            let listener = TcpListener::build()
-                .bind(cfg.listen_addr)
+            let exec_guard = shutdown.guard();
+            // let serve_guard = shutdown.guard();
+            let exec = Executor::graceful(exec_guard);
+            let listener = TcpListenerBuilder::new(exec.clone())
+                .bind_address(cfg.listen_addr)
                 .await
                 .map_err(|err| anyhow!("bind frontend TCP listener: {err}"))?;
 
@@ -108,9 +113,6 @@ impl ProxyApp {
                 writer,
                 client: upstream_client,
             };
-            let exec_guard = shutdown.guard();
-            let serve_guard = shutdown.guard();
-            let exec = Executor::graceful(exec_guard);
 
             info!(
                 listen_addr = %cfg.listen_addr,
@@ -129,44 +131,37 @@ impl ProxyApp {
                             async move { service.handle(req).await }
                         }));
                         Box::pin(async move {
+                            let tls_config = TlsServerConfig::new(); // TODO this is ... broken?
                             listener
-                                .serve_graceful(
-                                    serve_guard,
-                                    TlsAcceptorLayer::new(frontend_tls.acceptor_data)
-                                        .into_layer(http_service),
-                                )
+                                .serve(TlsAcceptorLayer::new(tls_config).into_layer(http_service))
                                 .await;
                             Ok(())
                         })
                     }
                     ResolvedHttpMode::Http1 => {
-                        let http_service = HttpServer::http1().service(service_fn(move |req| {
-                            let service = service.clone();
-                            async move { service.handle(req).await }
-                        }));
+                        let http_service =
+                            HttpServer::new_http1(exec).service(service_fn(move |req| {
+                                let service = service.clone();
+                                async move { service.handle(req).await }
+                            }));
                         Box::pin(async move {
+                            let tls_config = TlsServerConfig::new(); // TODO this is ... broken?
                             listener
-                                .serve_graceful(
-                                    serve_guard,
-                                    TlsAcceptorLayer::new(frontend_tls.acceptor_data)
-                                        .into_layer(http_service),
-                                )
+                                .serve(TlsAcceptorLayer::new(tls_config).into_layer(http_service))
                                 .await;
                             Ok(())
                         })
                     }
                     ResolvedHttpMode::Http2 => {
-                        let http_service = HttpServer::h2(exec).service(service_fn(move |req| {
-                            let service = service.clone();
-                            async move { service.handle(req).await }
-                        }));
+                        let http_service =
+                            HttpServer::new_h2(exec).service(service_fn(move |req| {
+                                let service = service.clone();
+                                async move { service.handle(req).await }
+                            }));
                         Box::pin(async move {
+                            let tls_config = TlsServerConfig::new(); // TODO this is ... broken?
                             listener
-                                .serve_graceful(
-                                    serve_guard,
-                                    TlsAcceptorLayer::new(frontend_tls.acceptor_data)
-                                        .into_layer(http_service),
-                                )
+                                .serve(TlsAcceptorLayer::new(tls_config).into_layer(http_service))
                                 .await;
                             Ok(())
                         })
@@ -443,7 +438,7 @@ pub(crate) fn build_upstream_client(
     cfg: &RuntimeConfig,
     http_mode: ResolvedHttpMode,
 ) -> anyhow::Result<BoxService<Request, Response, rama::error::BoxError>> {
-    let tls_config = build_upstream_tls(cfg, http_mode)?.connector_data;
+    let tls_config = build_upstream_tls(cfg, http_mode)?;
     let transport_connector = TcpConnector::new().with_connector({
         let connect_timeout = cfg.connect_timeout;
         move |addr| async move {
@@ -461,20 +456,21 @@ pub(crate) fn build_upstream_client(
     };
 
     let builder = EasyHttpConnectorBuilder::new()
-        .with_custom_transport_connector(transport_connector)
-        .without_tls_proxy_support()
-        .without_proxy_support()
-        .with_tls_support_using_rustls_and_default_http_version(
-            Some(tls_config),
-            cfg.upstream_default_version(),
-        )
-        .with_default_http_connector::<Body>()
-        .try_with_connection_pool(pool_config)
-        .context("enable upstream connection pool")?;
+        .with_custom_transport_connector(transport_connector).build_connector()
+        // .without_tls_proxy_support()
+        // .without_proxy_support()
+        // .with_tls_support_using_rustls_and_default_http_version(
+        //     Some(tls_config),
+        //     cfg.upstream_default_version(),
+        // )
+        // .with_default_http_connector::<Body>()
+        // .try_with_connection_pool(pool_config)
+        // .context("enable upstream connection pool")?;
+        ;
 
     let client = AddRequiredRequestHeadersLayer::new()
-        .into_layer(builder.build_client())
-        .boxed();
+        .into_layer(builder)
+    .;
 
-    Ok(client)
+    Ok(BoxService::new(client))
 }
