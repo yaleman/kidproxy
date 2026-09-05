@@ -6,6 +6,7 @@ use rama::net::tls::{
     ApplicationProtocol, DataEncoding, KeyLogIntent, SecureTransport,
     client::NegotiatedTlsParameters,
 };
+use rama::tls::fingerprint::{Ja3, Ja4};
 use rama::tls::rustls::client::{TlsConnectorData, TlsConnectorDataBuilder};
 use rama::tls::rustls::dep::pki_types::{CertificateDer, PrivateKeyDer};
 use rama::tls::rustls::dep::rustls::{ALL_VERSIONS, ClientConfig, RootCertStore};
@@ -128,7 +129,7 @@ fn ensure_rustls_crypto_provider() {
 pub fn frontend_tls_metadata(extensions: &Extensions) -> FrontendTlsMetadata {
     let mut metadata = FrontendTlsMetadata::default();
 
-    if let Some(params) = extensions.get::<NegotiatedTlsParameters>() {
+    if let Some(params) = extensions.get_arc::<NegotiatedTlsParameters>() {
         metadata.version = Some(params.protocol_version.to_string());
         metadata.alpn = params
             .application_layer_protocol
@@ -136,18 +137,16 @@ pub fn frontend_tls_metadata(extensions: &Extensions) -> FrontendTlsMetadata {
             .map(ToString::to_string);
     }
 
-    if let Some(secure) = extensions.get::<SecureTransport>()
+    if let Some(secure) = extensions.get_arc::<SecureTransport>()
         && let Some(client_hello) = secure.client_hello()
     {
         metadata.sni = client_hello.ext_server_name().map(ToString::to_string);
     }
 
-    metadata.ja3 = rama::net::fingerprint::Ja3::compute(extensions)
+    metadata.ja3 = Ja3::compute(extensions)
         .ok()
         .map(|value| format!("{value:x}"));
-    metadata.ja4 = rama::net::fingerprint::Ja4::compute(extensions)
-        .ok()
-        .map(|value| value.to_string());
+    metadata.ja4 = Ja4::compute(extensions).ok().map(|value| value.to_string());
 
     metadata
 }
@@ -158,7 +157,7 @@ pub fn backend_tls_metadata(extensions: &Extensions, configured_sni: &str) -> Ba
         ..BackendTlsMetadata::default()
     };
 
-    if let Some(params) = extensions.get::<NegotiatedTlsParameters>() {
+    if let Some(params) = extensions.get_arc::<NegotiatedTlsParameters>() {
         metadata.version = Some(params.protocol_version.to_string());
         metadata.alpn = params
             .application_layer_protocol

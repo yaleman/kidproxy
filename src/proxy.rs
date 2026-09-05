@@ -10,11 +10,11 @@ use crate::transform::{PrebufferDisposition, request_url};
 use crate::writer::SqliteWriterHandle;
 use anyhow::{Context, anyhow};
 use rama::graceful::Shutdown;
+use rama::http::client::EasyHttpConnectorBuilder;
 use rama::http::{
     Body, Request, Response, StatusCode, body::util::BodyExt, client::EasyHttpWebClient, header,
     layer::required_header::AddRequiredRequestHeadersLayer, server::HttpServer,
 };
-use rama::net::client::pool::http::HttpPooledConnectorConfig;
 use rama::rt::Executor;
 use rama::service::{BoxService, service_fn};
 use rama::tcp::{TcpStream, client::service::TcpConnector, server::TcpListener};
@@ -229,7 +229,13 @@ impl ProxyService {
             ));
         }
 
-        let request_url = request_url(req.uri().path(), req.uri().query());
+        let request_url = request_url(
+            &req.uri()
+                .path()
+                .map(|p| p.to_string())
+                .unwrap_or("/".to_string()),
+            req.uri().query().map(|q| q.to_string()),
+        );
         let force_identity_encoding = self
             .cfg
             .transforms
@@ -244,10 +250,14 @@ impl ProxyService {
         );
 
         let (mut parts, body) = req.into_parts();
-        let upstream_uri = match self
-            .cfg
-            .build_backend_uri(parts.uri.path(), parts.uri.query())
-        {
+        let upstream_uri = match self.cfg.build_backend_uri(
+            &parts
+                .uri
+                .path()
+                .map(|p| p.to_string())
+                .unwrap_or("/".to_string()),
+            parts.uri.query().map(|q| q.to_string()),
+        ) {
             Ok(uri) => uri,
             Err(err) => {
                 capture.set_rejection(
@@ -450,7 +460,7 @@ pub(crate) fn build_upstream_client(
         ..Default::default()
     };
 
-    let builder = EasyHttpWebClient::connector_builder()
+    let builder = EasyHttpConnectorBuilder::new()
         .with_custom_transport_connector(transport_connector)
         .without_tls_proxy_support()
         .without_proxy_support()

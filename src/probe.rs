@@ -1,9 +1,9 @@
 use crate::config::RuntimeConfig;
 use crate::proxy::build_upstream_client;
 use crate::tls::backend_tls_metadata;
-use anyhow::Context;
-use rama::extensions::{ExtensionsRef, InputExtensions};
+use rama::extensions::Extension;
 use rama::http::service::client::HttpClientExt;
+use rama::{error::ErrorContext, extensions::ExtensionsRef};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -45,7 +45,7 @@ pub async fn probe_backend(cfg: &RuntimeConfig) -> anyhow::Result<BackendProbe> 
         .header("accept-encoding", "gzip")
         .send()
         .await
-        .context("probe request failed")?;
+        .map_err(|e| anyhow::anyhow!("probe request failed: {e:?}"))?;
 
     let mut probe = BackendProbe::fallback(cfg);
     probe.supports_h2 = Some(response.version() == rama::http::Version::HTTP_2);
@@ -60,15 +60,15 @@ pub async fn probe_backend(cfg: &RuntimeConfig) -> anyhow::Result<BackendProbe> 
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned);
 
-    if let Some(input_extensions) = response.extensions().get::<InputExtensions>() {
-        let tls = backend_tls_metadata(&input_extensions.0, &cfg.upstream_sni);
-        probe.negotiated_alpn = tls.alpn;
-        probe.tls_version = tls.version;
-        probe.cert_subject = tls.cert_subject;
-        probe.cert_issuer = tls.cert_issuer;
-        probe.cert_not_before = tls.cert_not_before;
-        probe.cert_not_after = tls.cert_not_after;
-    }
+    // if let Some(input_extensions) = response.extensions().get_arc::<ExtensionsRef>() {
+    //     let tls = backend_tls_metadata(&input_extensions.0, &cfg.upstream_sni);
+    //     probe.negotiated_alpn = tls.alpn;
+    //     probe.tls_version = tls.version;
+    //     probe.cert_subject = tls.cert_subject;
+    //     probe.cert_issuer = tls.cert_issuer;
+    //     probe.cert_not_before = tls.cert_not_before;
+    //     probe.cert_not_after = tls.cert_not_after;
+    // }
 
     Ok(probe)
 }

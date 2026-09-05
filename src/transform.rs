@@ -349,7 +349,7 @@ impl TryFrom<TransformRuleFile> for TransformRule {
     }
 }
 
-pub fn request_url(path: &str, query: Option<&str>) -> String {
+pub fn request_url(path: &str, query: Option<String>) -> String {
     match query {
         Some(query) if !query.is_empty() => format!("{path}?{query}"),
         _ => path.to_owned(),
