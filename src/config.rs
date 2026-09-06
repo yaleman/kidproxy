@@ -1,8 +1,9 @@
 use crate::cli::HttpMode;
 use crate::transform::{TransformConfig, TransformRuleFile};
 use anyhow::{Context, bail};
-use rama::http::{Uri, Version};
+use rama::http::Version;
 use rama::net::address::Domain;
+use rama::net::uri::Uri;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;

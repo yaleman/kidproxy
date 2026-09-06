@@ -1,18 +1,16 @@
 use crate::config::RuntimeConfig;
 use crate::error::{ErrorInfo, ErrorKind, ProxyResult};
 use crate::event::ProxyEvent;
-use crate::tls::{
-    BackendTlsMetadata, FrontendTlsMetadata, backend_tls_metadata, frontend_tls_metadata,
-};
+use crate::tls::{BackendTlsMetadata, FrontendTlsMetadata, frontend_tls_metadata};
 use crate::writer::SqliteWriterHandle;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
-use rama::extensions::{ExtensionsRef, InputExtensions};
+use rama::extensions::ExtensionsRef;
 use rama::http::{
     HeaderMap, HeaderValue, Request, Response, StatusCode, StreamingBody, Version, header,
 };
-use rama::net::stream::{ClientSocketInfo, SocketInfo};
+use rama::net::stream::SocketInfo;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::pin::Pin;
@@ -27,7 +25,7 @@ pub struct SharedExchangeCapture(Arc<Mutex<ExchangeCapture>>);
 impl SharedExchangeCapture {
     pub fn new(cfg: &RuntimeConfig, req: &Request) -> Self {
         let started_at = OffsetDateTime::now_utc();
-        let socket_info = req.extensions().get::<SocketInfo>().cloned();
+        let socket_info = req.extensions().get_arc::<SocketInfo>();
         let client_from_headers = cfg
             .trust_proxy_headers
             .then(|| forwarded_client_ip(req.headers()))
@@ -41,17 +39,17 @@ impl SharedExchangeCapture {
         let client_ip = client_from_headers.or_else(|| {
             socket_info
                 .as_ref()
-                .map(|info| info.peer_addr().ip().to_string())
+                .map(|info| info.peer_addr().ip_addr.to_string())
         });
-        let client_port = socket_info.as_ref().map(|info| info.peer_addr().port());
+        let client_port = socket_info.as_ref().map(|info| info.peer_addr().port);
         let proxy_local_ip = socket_info
             .as_ref()
-            .and_then(|info| info.local_addr().copied())
-            .map(|addr| addr.ip().to_string());
+            .and_then(|info| info.local_addr())
+            .map(|addr| addr.ip_addr.to_string());
         let proxy_local_port = socket_info
             .as_ref()
-            .and_then(|info| info.local_addr().copied())
-            .map(|addr| addr.port())
+            .and_then(|info| info.local_addr())
+            .map(|addr| addr.port)
             .or(Some(cfg.listen_addr.port()));
 
         Self(Arc::new(Mutex::new(ExchangeCapture {
@@ -70,8 +68,13 @@ impl SharedExchangeCapture {
             backend_port: Some(cfg.backend_port),
             method: req.method().to_string(),
             authority,
-            path: req.uri().path().to_owned(),
-            query: req.uri().query().map(ToOwned::to_owned),
+            path: req
+                .uri()
+                .path()
+                .to_owned()
+                .map(|path| path.to_string())
+                .unwrap_or_else(|| "/".to_owned()),
+            query: req.uri().query().map(|q| q.to_string()),
             request_headers_json: serialize_headers(req.headers(), &cfg.header_log_policy),
             request_cookie_header: header_value(req.headers(), header::COOKIE),
             request_cookies_json: parse_cookies(req.headers().get(header::COOKIE)),
@@ -132,14 +135,15 @@ impl SharedExchangeCapture {
         ));
         guard.proxy_result = ProxyResult::Success;
 
-        if let Some(input_extensions) = resp.extensions().get::<InputExtensions>() {
-            let ext = &input_extensions.0;
-            if let Some(socket) = ext.get::<ClientSocketInfo>() {
-                guard.backend_ip = Some(socket.peer_addr().ip().to_string());
-                guard.backend_port = Some(socket.peer_addr().port());
-            }
-            guard.backend_tls = backend_tls_metadata(ext, &cfg.upstream_sni);
-        }
+        // TODO: figure this shit out for rama
+        // if let Some(input_extensions) = resp.extensions().get_arc::<InputExtensions>() {
+        //     let ext = &input_extensions.0;
+        //     if let Some(socket) = ext.get_arc::<ClientSocketInfo>() {
+        //         guard.backend_ip = Some(socket.peer_addr().ip().to_string());
+        //         guard.backend_port = Some(socket.peer_addr().port());
+        //     }
+        //     guard.backend_tls = backend_tls_metadata(ext, &cfg.upstream_sni);
+        // }
     }
 
     pub fn set_upstream_error(&self, error: ErrorInfo) {
@@ -501,7 +505,7 @@ impl<B> Drop for ObservedBody<B> {
 pub fn request_authority(req: &Request) -> Option<String> {
     req.uri()
         .authority()
-        .map(|authority| authority.as_str().to_owned())
+        .map(|authority| authority.to_string())
         .or_else(|| header_value(req.headers(), header::HOST))
 }
 
@@ -702,7 +706,6 @@ fn format_http_version(version: Version) -> String {
         Version::HTTP_11 => "HTTP/1.1".to_owned(),
         Version::HTTP_2 => "HTTP/2".to_owned(),
         Version::HTTP_3 => "HTTP/3".to_owned(),
-        _ => format!("{version:?}"),
     }
 }
 
