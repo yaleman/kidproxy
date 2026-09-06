@@ -44,11 +44,11 @@ impl SharedExchangeCapture {
         let client_port = socket_info.as_ref().map(|info| info.peer_addr().port);
         let proxy_local_ip = socket_info
             .as_ref()
-            .and_then(|info| info.local_addr().clone())
+            .and_then(|info| info.local_addr())
             .map(|addr| addr.ip_addr.to_string());
         let proxy_local_port = socket_info
             .as_ref()
-            .and_then(|info| info.local_addr().clone())
+            .and_then(|info| info.local_addr())
             .map(|addr| addr.port)
             .or(Some(cfg.listen_addr.port()));
 

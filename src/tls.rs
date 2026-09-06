@@ -148,8 +148,8 @@ pub fn backend_tls_metadata(extensions: &Extensions, configured_sni: &str) -> Ba
     metadata
 }
 
-fn populate_cert_metadata(metadata: &mut BackendTlsMetadata, chain: &Vec<CertificateDer>) {
-    let first_cert = chain.into_iter().next();
+fn populate_cert_metadata(metadata: &mut BackendTlsMetadata, chain: &[CertificateDer]) {
+    let first_cert = chain.first();
 
     let Some(leaf_der) = first_cert else {
         return;
@@ -268,10 +268,8 @@ mod tests {
             transforms: TransformConfig::default(),
         };
 
-        build_frontend_tls(&cfg, ResolvedHttpMode::Http1)
-            .expect("Failed to build http1 frontend TLS");
-        build_upstream_tls(&cfg, ResolvedHttpMode::Http1)
-            .expect("Failed to build http1 upstream TLS");
+        build_frontend_tls(&cfg, ResolvedHttpMode::Http1)?;
+        build_upstream_tls(&cfg, ResolvedHttpMode::Http1)?;
 
         Ok(())
     }

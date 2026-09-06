@@ -9,7 +9,7 @@ use crate::tls::{build_frontend_tls, build_upstream_tls};
 use crate::transform::{PrebufferDisposition, request_url};
 use crate::writer::SqliteWriterHandle;
 use anyhow::{Context, anyhow};
-use rama::graceful::Shutdown;
+use rama::graceful::{Shutdown, default_signal};
 use rama::http::client::{EasyHttpConnectorBuilder, HttpPooledConnectorConfig};
 use rama::http::{
     Body, Request, Response, StatusCode, body::util::BodyExt, header,
@@ -96,13 +96,11 @@ impl ProxyApp {
         let probe = self.probe.clone();
         let http_mode = self.http_mode;
         let upstream_client = self.upstream_client.clone();
-        // let frontend_tls = self.frontend_tls.clone();
+        let frontend_tls = self.frontend_tls.clone();
 
         let task = tokio::spawn(async move {
-            let shutdown = Shutdown::default();
-            let exec_guard = shutdown.guard();
-            // let serve_guard = shutdown.guard();
-            let exec = Executor::graceful(exec_guard);
+            let shutdown = Shutdown::new(wait_for_shutdown_signal(stop_rx, default_signal()));
+            let exec = Executor::graceful(shutdown.guard());
             let listener = TcpListenerBuilder::new(exec.clone())
                 .bind_address(cfg.listen_addr)
                 .await
@@ -131,9 +129,8 @@ impl ProxyApp {
                             async move { service.handle(req).await }
                         }));
                         Box::pin(async move {
-                            let tls_config = TlsServerConfig::new(); // TODO this is ... broken?
                             listener
-                                .serve(TlsAcceptorLayer::new(tls_config).into_layer(http_service))
+                                .serve(TlsAcceptorLayer::new(frontend_tls).into_layer(http_service))
                                 .await;
                             Ok(())
                         })
@@ -145,9 +142,8 @@ impl ProxyApp {
                                 async move { service.handle(req).await }
                             }));
                         Box::pin(async move {
-                            let tls_config = TlsServerConfig::new(); // TODO this is ... broken?
                             listener
-                                .serve(TlsAcceptorLayer::new(tls_config).into_layer(http_service))
+                                .serve(TlsAcceptorLayer::new(frontend_tls).into_layer(http_service))
                                 .await;
                             Ok(())
                         })
@@ -159,24 +155,21 @@ impl ProxyApp {
                                 async move { service.handle(req).await }
                             }));
                         Box::pin(async move {
-                            let tls_config = TlsServerConfig::new(); // TODO this is ... broken?
                             listener
-                                .serve(TlsAcceptorLayer::new(tls_config).into_layer(http_service))
+                                .serve(TlsAcceptorLayer::new(frontend_tls).into_layer(http_service))
                                 .await;
                             Ok(())
                         })
                     }
                 };
 
+            let mut shutdown_future =
+                Box::pin(shutdown.shutdown_with_limit(cfg.graceful_shutdown_timeout));
+
             tokio::select! {
-                result = &mut serve_future => {
-                    result?;
-                }
-                _ = stop_rx => {
-                    shutdown
-                        .shutdown_with_limit(cfg.graceful_shutdown_timeout)
-                        .await
-                        .context("graceful proxy shutdown failed")?;
+                result = &mut serve_future => result?,
+                result = &mut shutdown_future => {
+                    result.context("graceful proxy shutdown failed")?;
                     serve_future.await?;
                 }
             }
@@ -188,6 +181,16 @@ impl ProxyApp {
             stop_tx: Some(stop_tx),
             task,
         })
+    }
+}
+
+async fn wait_for_shutdown_signal(
+    stop_rx: oneshot::Receiver<()>,
+    external_signal: impl Future<Output = ()>,
+) {
+    tokio::select! {
+        _ = stop_rx => {}
+        _ = external_signal => {}
     }
 }
 
@@ -245,14 +248,16 @@ impl ProxyService {
         );
 
         let (mut parts, body) = req.into_parts();
-        let upstream_uri = match self.cfg.build_backend_uri(
-            &parts
-                .uri
-                .path()
-                .map(|p| p.to_string())
-                .unwrap_or("/".to_string()),
-            parts.uri.query().map(|q| q.to_string()),
-        ) {
+        let upstream_path = parts
+            .uri
+            .path()
+            .map(|path| path.to_string())
+            .unwrap_or_else(|| "/".to_owned());
+        let upstream_query = parts.uri.query().map(|query| query.to_string());
+        let upstream_uri = match self
+            .cfg
+            .build_backend_uri(&upstream_path, upstream_query.as_deref())
+        {
             Ok(uri) => uri,
             Err(err) => {
                 capture.set_rejection(
@@ -456,21 +461,49 @@ pub(crate) fn build_upstream_client(
     };
 
     let builder = EasyHttpConnectorBuilder::new()
-        .with_custom_transport_connector(transport_connector).build_connector()
-        // .without_tls_proxy_support()
-        // .without_proxy_support()
-        // .with_tls_support_using_rustls_and_default_http_version(
-        //     Some(tls_config),
-        //     cfg.upstream_default_version(),
-        // )
-        // .with_default_http_connector::<Body>()
-        // .try_with_connection_pool(pool_config)
-        // .context("enable upstream connection pool")?;
-        ;
+        .with_custom_transport_connector(transport_connector)
+        .with_default_dns_connector()
+        .without_tls_proxy_support()
+        .without_proxy_support()
+        .with_tls_support_using_rustls_and_default_http_version(
+            tls_config,
+            cfg.upstream_default_version(),
+        )
+        .with_default_http_connector::<Body>(Executor::default())
+        .map_connector(|connector| connector.boxed())
+        .try_with_connection_pool(pool_config)
+        .map_err(|err| anyhow!("enable upstream connection pool: {err}"))?;
 
     let client = AddRequiredRequestHeadersLayer::new()
-        .into_layer(builder)
-    .;
+        .into_layer(builder.build_client())
+        .boxed();
 
-    Ok(BoxService::new(client))
+    Ok(client)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wait_for_shutdown_signal;
+    use anyhow::Context;
+    use std::time::Duration;
+    use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn external_signal_finishes_shutdown_wait_while_stop_sender_is_held() -> anyhow::Result<()>
+    {
+        let (_stop_tx, stop_rx) = oneshot::channel();
+        let (external_tx, external_rx) = oneshot::channel();
+        external_tx
+            .send(())
+            .expect("failed to send external shutdown signal");
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_shutdown_signal(stop_rx, async move {
+                let _ = external_rx.await;
+            }),
+        )
+        .await
+        .context("external shutdown signal timed out")
+    }
 }

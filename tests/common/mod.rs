@@ -11,14 +11,16 @@ use kidproxy::proxy::{ProxyApp, ProxyHandle};
 use kidproxy::transform::{TransformConfig, TransformRuleFile};
 use kidproxy::writer::{SqliteWriterHandle, spawn_writer};
 use rama::Layer;
+use rama::crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama::graceful::Shutdown;
 use rama::http::{
     Body, Request, Response, StatusCode, body::util::BodyExt, header, server::HttpServer,
 };
+use rama::rt::Executor;
 use rama::service::service_fn;
 use rama::tcp::server::TcpListener;
-use rama::tls::rustls::dep::pki_types::{CertificateDer, PrivateKeyDer};
-use rama::tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
+use rama::tls::rustls::server::TlsAcceptorLayer;
+use rama::tls::server::{ServerAuthData, TlsServerConfig};
 use rcgen::generate_simple_self_signed;
 use sea_orm::EntityTrait;
 use serde::Deserialize;
@@ -318,39 +320,36 @@ async fn start_backend(base: &Path) -> anyhow::Result<BackendHarness> {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), unused_port()?);
     let hits = Arc::new(AtomicUsize::new(0));
     let (stop_tx, stop_rx) = oneshot::channel();
-    let listener = TcpListener::build()
-        .bind(addr)
+    let shutdown = Shutdown::new(async move {
+        let _ = stop_rx.await;
+    });
+    let exec = Executor::graceful(shutdown.guard());
+    let listener = TcpListener::build(exec.clone())
+        .bind_address(addr)
         .await
         .map_err(|err| anyhow!("bind backend listener: {err}"))?;
     let tls = build_test_acceptor(&cert)?;
     let hits_for_service = hits.clone();
 
     let task = tokio::spawn(async move {
-        let shutdown = Shutdown::default();
-        let serve_guard = shutdown.guard();
-        let http_service = HttpServer::http1().service(service_fn(move |req: Request| {
+        let http_service = HttpServer::new_http1(exec).service(service_fn(move |req: Request| {
             let hits = hits_for_service.clone();
             async move { backend_response(req, hits).await }
         }));
-        let mut serve_task = tokio::spawn(async move {
+        let mut serve_future = Box::pin(async move {
             listener
-                .serve_graceful(
-                    serve_guard,
-                    TlsAcceptorLayer::new(tls).into_layer(http_service),
-                )
+                .serve(TlsAcceptorLayer::new(tls).into_layer(http_service))
                 .await;
             Ok::<(), anyhow::Error>(())
         });
+        let mut shutdown_future =
+            Box::pin(shutdown.shutdown_with_limit(std::time::Duration::from_secs(2)));
 
         tokio::select! {
-            result = &mut serve_task => {
-                result.map_err(|err| anyhow!("backend serve task join failure: {err}"))??;
-            }
-            _ = stop_rx => {
-                let _ = shutdown.shutdown_with_limit(std::time::Duration::from_secs(2)).await;
-                serve_task
-                    .await
-                    .map_err(|err| anyhow!("backend serve task join failure: {err}"))??;
+            result = &mut serve_future => result?,
+            result = &mut shutdown_future => {
+                result.context("graceful backend shutdown failed")?;
+                serve_future.await?;
             }
         }
 
@@ -369,7 +368,11 @@ async fn start_backend(base: &Path) -> anyhow::Result<BackendHarness> {
 async fn backend_response(req: Request, hits: Arc<AtomicUsize>) -> Result<Response, Infallible> {
     hits.fetch_add(1, Ordering::Relaxed);
 
-    let path = req.uri().path().to_owned();
+    let path = req
+        .uri()
+        .path()
+        .map(|path| path.to_string())
+        .unwrap_or_else(|| "/".to_owned());
     let response = match path.as_str() {
         "/hello" => Response::new(Body::from("hello from backend")),
         "/headers" => {
@@ -471,14 +474,12 @@ async fn backend_response(req: Request, hits: Arc<AtomicUsize>) -> Result<Respon
     Ok(response)
 }
 
-fn build_test_acceptor(
-    cert: &TestCert,
-) -> anyhow::Result<rama::tls::rustls::server::TlsAcceptorData> {
+fn build_test_acceptor(cert: &TestCert) -> anyhow::Result<TlsServerConfig> {
     let cert_chain = load_cert_chain(&cert.cert_path)?;
     let private_key = load_private_key(&cert.key_path)?;
-    TlsAcceptorDataBuilder::new(cert_chain, private_key)
-        .map(|builder| builder.build())
-        .context("build test TLS acceptor")
+    Ok(TlsServerConfig::new()
+        .with_single_cert(ServerAuthData::new(cert_chain, private_key))
+        .with_alpn_http_1())
 }
 
 fn load_cert_chain(path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
