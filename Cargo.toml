@@ -13,9 +13,6 @@ futures = "0.3"
 glob = "0.3.4"
 hex = "0.4"
 leptos = { version = "0.8.22", features = ["ssr"] }
-leptos_axum = "0.8.10"
-leptos_meta = { version = "0.8.7", features = ["ssr"] }
-leptos_router = { version = "0.8.17", features = ["ssr"] }
 rama = { version = "=0.4.0", features = ["http-full", "rustls", "aws-lc"] }
 rustls-native-certs = "0.8.4"
 rustls-pemfile = "2.2.0"
